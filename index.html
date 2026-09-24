@@ -138,15 +138,22 @@
             <span>REAL-TIME ACTIVITY</span>
             <h2>Live firing — 14 FlyWire neurons</h2>
           </div>
-          <small>glow = spike this tick</small>
+          <div style="display:flex;align-items:center;gap:6px">
+            <button id="replayCascadeBtn" class="cascade-replay-btn" title="Trigger or replay slow-motion cascade">▶ Cascade</button>
+            <small>5-step cascade</small>
+          </div>
         </div>
         <canvas id="neuronGraph" width="310" height="210"></canvas>
+        <div id="cascadeStepLabel" class="cascade-step-label">
+          <span class="cascade-step-badge">IDLE</span>
+          <span class="cascade-step-text">Idle · awaiting social trigger</span>
+        </div>
         <p id="neuronMeaning" class="neuron-meaning">P1 circuit is waiting for a social signal.</p>
         <p class="neuron-honesty">
           One leaky integrate-and-fire unit per FlyWire neuron: 4 sensory (aIP1) &middot; 6 P1 cluster (aSP10) &middot; 4 motor (pIP14).
           Only sensory units get input from the arena; P1 and motor units are driven purely by spikes over the
           <span data-fact="edges">…</span> real edges (<span data-fact="synapses">?</span> synapses from <code>synapses_nt_v1</code>).
-          Wire thickness = synapse count. Glow = that neuron spiked this tick.
+          Wire thickness = synapse count. On trigger, signal cascades step-by-step from sensory &rarr; P1 &rarr; motor.
         </p>
         <button id="openCircuitViewBtn" class="circuit-link-btn">&#x1F52C; Per-Emotion Subcircuits View &rarr;</button>
       </section>
@@ -207,6 +214,10 @@
         </label>
         <button id="animSubcircuitBtn" class="pulse-btn">&#x25B6; Animate signal transmission</button>
       </div>
+    </div>
+    <div class="circuit-reference-note">
+      <span class="circuit-reference-icon">&#x1F4D6;</span>
+      <span><strong>Reference wiring for this state</strong> — run offline at full-strength canonical input (100% social drive). The live <em>Brain</em> diagram shows real-time partial activation that varies with actual distance and signal strength. Differences between the two are expected and not a bug.</span>
     </div>
 
     <div class="circuit-grid">

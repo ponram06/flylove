@@ -181,9 +181,92 @@ footer { padding: 14px 3px 0; color: #a17a76 }
   background: #f0e1fb; border-color: #ba8be6; transform: translateY(-1px);
 }
 
+/* Cascade controls and step indicator */
+.cascade-replay-btn {
+  background: #fdf3ed;
+  color: #7b4340;
+  border: 1px solid #ebd0c4;
+  font: 700 10.5px 'DM Mono', monospace;
+  padding: 3px 8px;
+  border-radius: 99px;
+  cursor: pointer;
+  transition: all .15s ease;
+  white-space: nowrap;
+}
+.cascade-replay-btn:hover {
+  background: #fce5da;
+  border-color: #dca796;
+  color: #5d2b28;
+  transform: translateY(-1px);
+}
+.cascade-replay-btn:active {
+  transform: scale(0.96);
+}
+.cascade-step-label {
+  margin: 6px 0 4px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #fff8f5;
+  border: 1px solid #ebd0c4;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  box-sizing: border-box;
+  transition: all .2s ease;
+}
+.cascade-step-label.active {
+  background: #fff4ee;
+  border-color: #e98971;
+  box-shadow: 0 2px 8px rgba(233, 137, 113, 0.22);
+}
+.cascade-step-badge {
+  font: 700 9px 'DM Mono', monospace;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #e8d7d0;
+  color: #6a4943;
+  letter-spacing: .04em;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all .18s;
+}
+.cascade-step-label.active .cascade-step-badge {
+  background: #e98971;
+  color: #fff;
+}
+.cascade-step-text {
+  font: 500 10.5px 'DM Mono', monospace;
+  color: #553457;
+  line-height: 1.35;
+  flex-grow: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Dedicated Circuit Explorer ──────────────────────────────── */
 .circuit-explorer {
   margin-top: 4px; padding: 18px 20px;
+}
+.circuit-reference-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: #fff8f0;
+  border: 1px solid #ebd3be;
+  font-size: 11.5px;
+  color: #6b4840;
+  line-height: 1.5;
+}
+.circuit-reference-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 .circuit-view-head {
   display: flex; justify-content: space-between; align-items: center;

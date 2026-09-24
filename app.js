@@ -210,6 +210,13 @@ function change(s) {
   const floatie = { love:'💘', angry:'💢', chill:'😌', happy:'🎉', sad:'😬' }[s];
   if (floatie) spawnFloatie(floatie, player.x, player.y);
 
+  if (s !== 'calm') {
+    triggerCascade(s);
+  } else {
+    cascade.active = false;
+    updateCascadeUI(0, 'Idle · awaiting social trigger', null);
+  }
+
   // Snapshot what the network was doing so replay can show it
   const p1pct = Math.round(player.brain.p1Rate * 100);
   const e = { state:s, parts:words(s), status:getLiveP1Status(s, p1pct), rates:Float32Array.from(player.brain.rate) };
@@ -354,6 +361,9 @@ function step() {
   // Leave anger right away once the enemy is out of range
   const leaveAngry = player.state === 'angry' && s.threat === 0;
   if (st !== player.state && (time-player.last > .35 || leaveAngry)) change(st);
+
+  // Keep the cascade looping flag in sync with current live state
+  updateCascadeLoop(player.state);
 
   flies.forEach(f => {
     f.trail.push({x:f.x, y:f.y});
@@ -736,7 +746,113 @@ function meanOf(arr, idx) {
   return idx.length ? s / idx.length : 0;
 }
 
-// ── Live node-and-wire graph: every glow is a real spike from the model ──────
+// ── Slow-motion neuron cascade system (sequenced 5-step propagation) ──────────
+// The cascade loops while proximity persists:
+//   Phase A (0–2500ms): 5 animation steps, each 500ms
+//   Phase B (2500–3400ms): quiet "idle pause" — all neurons dim, steady state badge
+// At the end of Phase B, if the trigger condition is still live the loop restarts.
+const CASCADE_STEP_MS  = 500;  // 500ms per step → 2.5s for 5 steps
+const CASCADE_IDLE_MS  = 900;  // quiet pause between loops while still in range
+const CASCADE_TOTAL_MS = CASCADE_STEP_MS * 5 + CASCADE_IDLE_MS; // 3400ms full cycle
+
+let cascade = {
+  active: false,     // true while a cycle is running (animation or idle-pause)
+  looping: false,    // true while proximity still holds (wants to re-run)
+  state: null,
+  startTime: 0,
+  step: 0,
+  sensoryIds: [],
+  s2pEdges: [],
+  p1Ids: [],
+  p2mEdges: [],
+  motorIds: [],
+  color: C.calm,
+};
+
+// Called every sim tick from step() to keep the looping flag fresh
+function updateCascadeLoop(currentState) {
+  if (!cascade.active) return;
+  // If the state hasn't changed we're still in range; allow a restart
+  cascade.looping = (currentState === cascade.state && currentState !== 'calm');
+}
+
+function getCascadePath(stimulusKey) {
+  if (!net) return null;
+  const sensoryIds = (FlyModel.STIMULUS_MAP[stimulusKey] || []).slice();
+  const nMap = Object.fromEntries(net.neurons.map(n => [n.id, n]));
+
+  // Real edges from these sensory neurons to P1
+  const s2pEdges = net.edges.filter(e => sensoryIds.includes(e.pre) && nMap[e.post] && nMap[e.post].group === 'p1');
+  const p1Ids = [...new Set(s2pEdges.map(e => e.post))];
+
+  // Real edges from these P1 neurons to Motor
+  const p2mEdges = net.edges.filter(e => p1Ids.includes(e.pre) && nMap[e.post] && nMap[e.post].group === 'motor');
+  const motorIds = [...new Set(p2mEdges.map(e => e.post))];
+
+  return { sensoryIds, s2pEdges, p1Ids, p2mEdges, motorIds };
+}
+
+function getStepLabels(ids) {
+  if (!ids || !ids.length || !net) return '';
+  return ids.map(id => net.neurons[net.index.get(id)]?.label || id).join(', ');
+}
+
+function updateCascadeUI(stepNum, text, color) {
+  const badge = document.querySelector('.cascade-step-badge');
+  const txt   = document.querySelector('.cascade-step-text');
+  const wrap  = document.querySelector('#cascadeStepLabel');
+  if (badge) {
+    badge.textContent = stepNum > 0 ? `STEP ${stepNum}/5` : 'IDLE';
+    if (color && stepNum > 0) {
+      badge.style.background = color;
+      badge.style.color = '#fff';
+    } else {
+      badge.style.background = '';
+      badge.style.color = '';
+    }
+  }
+  if (txt) setText(txt, text);
+  if (wrap) wrap.classList.toggle('active', stepNum > 0);
+}
+
+function triggerCascade(st, force = false) {
+  if (!net) return;
+  if (!st || st === 'calm') {
+    // Don't stop mid-cycle if still going — just clear looping so it won't restart
+    cascade.looping = false;
+    if (!cascade.active) {
+      updateCascadeUI(0, 'Idle · awaiting social trigger', null);
+    }
+    return;
+  }
+  // Don't restart if already running the same state (let current cycle finish)
+  if (!force && cascade.active && cascade.state === st) {
+    cascade.looping = true;
+    return;
+  }
+  const stimMap = { love: 'lover', angry: 'enemy', chill: 'friend', happy: 'food', sad: 'drama' };
+  const stim = stimMap[st];
+  if (!stim) return;
+
+  const path = getCascadePath(stim);
+  if (!path) return;
+
+  cascade = {
+    active: true,
+    looping: true,
+    state: st,
+    startTime: performance.now(),
+    step: 1,
+    sensoryIds: path.sensoryIds,
+    s2pEdges: path.s2pEdges,
+    p1Ids: path.p1Ids,
+    p2mEdges: path.p2mEdges,
+    motorIds: path.motorIds,
+    color: C[st] || C.calm,
+  };
+}
+
+// ── Live node-and-wire graph: explicit 5-step cascade on trigger ─────────────
 let loadError = null;
 function drawNeuronGraph() {
   ng.clearRect(0,0,NGW,NGH);
@@ -752,65 +868,206 @@ function drawNeuronGraph() {
   const p1pct = Math.round((ev ? meanOf(ev.rates, net.byGroup.p1) : player.brain.p1Rate) * 100);
   setText('#neuronMeaning', (ev ? 'Replay: ' : 'Live: ') + getLiveP1Status(ev ? ev.state : player.state, p1pct) + '.');
 
-  // Live: afterglow of this tick's spikes. Replay: firing-rate snapshot.
-  const glowOf = ev ? (i => Math.min(1, ev.rates[i] * 2)) : (i => nodeGlow[i]);
-  const color  = C[ev ? ev.state : player.state] || C.calm;
-
-  // Every real edge; thickness = synapse-count weight
-  ng.strokeStyle = 'rgba(200,170,160,0.35)';
+  // Background: every real edge drawn dim
+  ng.strokeStyle = 'rgba(200,170,160,0.25)';
   for (const e of net.edges) {
     const c = edgeCurve(nodePos, e.pre, e.post, 28);
     if (!c) continue;
-    ng.lineWidth = 0.4 + e.w * 1.4;
+    ng.lineWidth = 0.4 + e.w * 1.2;
     strokeCurve(ng, c);
   }
 
-  // Edges whose presynaptic neuron just fired carry signal
-  for (const e of net.edges) {
-    const g = glowOf(e.from);
-    if (g < 0.08) continue;
+  const nodeGlowMap = new Map();
+  const activeEdges = [];
+  const color = cascade.active ? cascade.color : (C[ev ? ev.state : player.state] || C.calm);
+
+  if (cascade.active) {
+    const elapsed = performance.now() - cascade.startTime;
+
+    if (elapsed >= CASCADE_TOTAL_MS) {
+      // Full cycle (5 steps + idle pause) done
+      if (cascade.looping) {
+        // Still in range → restart immediately with a fresh cycle
+        cascade.startTime = performance.now();
+      } else {
+        // Out of range → truly done
+        cascade.active = false;
+        cascade.step = 0;
+        updateCascadeUI(0, 'Idle · awaiting social trigger', null);
+      }
+    } else if (elapsed >= CASCADE_STEP_MS * 5) {
+      // Idle-pause phase: animation done, quiet rest before next loop
+      cascade.step = 0;
+      const stateLabel = { love: 'Love', angry: 'Angry', chill: 'Chill', happy: 'Happy', sad: 'Sad' }[cascade.state] || cascade.state;
+      const loopBadge = cascade.looping ? ' · repeating…' : ' · finishing';
+      // Show a dimly tinted "still feeling it" badge during the pause
+      const badge = document.querySelector('.cascade-step-badge');
+      const txt   = document.querySelector('.cascade-step-text');
+      const wrap  = document.querySelector('#cascadeStepLabel');
+      if (badge) { badge.textContent = stateLabel.toUpperCase(); badge.style.background = hexToRgba(cascade.color, 0.5); badge.style.color = '#fff'; }
+      if (txt) setText(txt, `${stateLabel} · steady state${loopBadge}`);
+      if (wrap) wrap.classList.add('active');
+      // All neurons rest dim during idle pause — no active edges or glow needed
+    } else {
+      // Active animation phase (steps 1–5)
+      const stepIdx = Math.min(5, Math.floor(elapsed / CASCADE_STEP_MS) + 1);
+      const stepT = (elapsed - (stepIdx - 1) * CASCADE_STEP_MS) / CASCADE_STEP_MS; // 0..1
+      cascade.step = stepIdx;
+
+      if (stepIdx === 1) {
+        // STEP 1 (~500ms): only triggering sensory neuron(s) light up
+        for (const id of cascade.sensoryIds) {
+          nodeGlowMap.set(id, 0.85 + Math.sin(stepT * Math.PI) * 0.15);
+        }
+        const sLabels = getStepLabels(cascade.sensoryIds);
+        updateCascadeUI(1, `${sLabels} fired`, color);
+      } else if (stepIdx === 2) {
+        // STEP 2 (~500ms): real edge(s) animate with dot traveling from sensory to P1
+        for (const id of cascade.sensoryIds) {
+          nodeGlowMap.set(id, 0.75);
+        }
+        for (const id of cascade.p1Ids) {
+          nodeGlowMap.set(id, stepT * 0.35); // warming up
+        }
+        for (const e of cascade.s2pEdges) {
+          activeEdges.push({ e, u: stepT, alpha: 0.85 });
+        }
+        const pLabels = getStepLabels(cascade.p1Ids);
+        updateCascadeUI(2, `Signal traveling to ${pLabels}…`, color);
+      } else if (stepIdx === 3) {
+        // STEP 3 (~500ms): P1 neuron(s) light up
+        for (const id of cascade.sensoryIds) {
+          nodeGlowMap.set(id, Math.max(0, 0.5 * (1 - stepT)));
+        }
+        for (const id of cascade.p1Ids) {
+          nodeGlowMap.set(id, 0.85 + Math.sin(stepT * Math.PI) * 0.15);
+        }
+        for (const e of cascade.s2pEdges) {
+          activeEdges.push({ e, u: 1, alpha: (1 - stepT) * 0.5 });
+        }
+        const pLabels = getStepLabels(cascade.p1Ids);
+        updateCascadeUI(3, `${pLabels} fired`, color);
+      } else if (stepIdx === 4) {
+        // STEP 4 (~500ms): real edge(s) animate from P1 to Motor
+        for (const id of cascade.p1Ids) {
+          nodeGlowMap.set(id, 0.75);
+        }
+        for (const id of cascade.motorIds) {
+          nodeGlowMap.set(id, stepT * 0.35); // warming up
+        }
+        for (const e of cascade.p2mEdges) {
+          activeEdges.push({ e, u: stepT, alpha: 0.85 });
+        }
+        const mLabels = getStepLabels(cascade.motorIds);
+        if (cascade.p2mEdges.length > 0) {
+          updateCascadeUI(4, `Signal traveling to ${mLabels}…`, color);
+        } else {
+          updateCascadeUI(4, 'Signal dissipated at P1 · no motor output', color);
+        }
+      } else if (stepIdx === 5) {
+        // STEP 5 (~500ms): motor neuron(s) light up, then idle pause
+        for (const id of cascade.p1Ids) {
+          nodeGlowMap.set(id, Math.max(0, 0.5 * (1 - stepT)));
+        }
+        for (const id of cascade.motorIds) {
+          nodeGlowMap.set(id, Math.max(0, 0.95 - stepT * 0.75));
+        }
+        for (const e of cascade.p2mEdges) {
+          activeEdges.push({ e, u: 1, alpha: (1 - stepT) * 0.5 });
+        }
+        const mLabels = getStepLabels(cascade.motorIds);
+        if (cascade.motorIds.length > 0) {
+          updateCascadeUI(5, `${mLabels} fired`, color);
+        } else {
+          updateCascadeUI(5, 'Quiet · calm social presence', color);
+        }
+      }
+    }
+  } else {
+    // Truly idle: nothing active
+    updateCascadeUI(0, 'Idle · awaiting social trigger', null);
+  }
+
+  // Draw highlighted active cascade edges
+  for (const { e, u, alpha } of activeEdges) {
     const c = edgeCurve(nodePos, e.pre, e.post, 28);
     if (!c) continue;
-    ng.strokeStyle = hexToRgba(color, 0.2 + g * 0.7);
-    ng.lineWidth = 0.8 + e.w * 2;
-    strokeCurve(ng, c);
-    if (!ev && g > 0.15 && g < 1) drawSignalDot(ng, getBezierPoint(c.p0, c.p1, c.p2, c.p3, 1 - g), color);
+    ng.strokeStyle = hexToRgba(color, alpha);
+    ng.lineWidth = 0.9 + e.w * 2.2;
+    if (u >= 1) {
+      strokeCurve(ng, c);
+    } else {
+      drawPartialCurve(ng, c.p0, c.p1, c.p2, c.p3, u);
+      drawSignalDot(ng, getBezierPoint(c.p0, c.p1, c.p2, c.p3, u), color);
+    }
   }
 
+  // Column headers
   ng.fillStyle='#b08880'; ng.font='bold 7.5px DM Mono'; ng.textAlign='center';
   ng.fillText('SENSORY', LIVE_GROUP_X.sensory, 11);
   ng.fillText('P1 CLUSTER', LIVE_GROUP_X.p1, 11);
   ng.fillText('MOTOR', LIVE_GROUP_X.motor, 11);
 
+  // Draw 14 neurons
   const NODE_R = 8;
   net.neurons.forEach((n, i) => {
     const p = nodePos[n.id];
     if (!p) return;
-    const glow = glowOf(i);
+    const glow = nodeGlowMap.get(n.id) || 0;
     const base = GROUP_COL[n.group] || GROUP_COL.p1;
 
     if (glow > 0.05) {
       const haloR = NODE_R + 5 + glow * 7;
       const gr = ng.createRadialGradient(p.x, p.y, NODE_R * 0.5, p.x, p.y, haloR);
-      gr.addColorStop(0, hexToRgba(color, glow * 0.7));
+      gr.addColorStop(0, hexToRgba(color, glow * 0.75));
       gr.addColorStop(1, 'rgba(0,0,0,0)');
       ng.beginPath(); ng.arc(p.x, p.y, haloR, 0, Math.PI * 2);
       ng.fillStyle = gr; ng.fill();
     }
 
     ng.beginPath(); ng.arc(p.x, p.y, NODE_R, 0, Math.PI*2);
-    ng.fillStyle = glow > 0.05 ? blendHex(base, color, glow * 0.8) : base + '55';
+    ng.fillStyle = glow > 0.05 ? blendHex(base, color, glow * 0.85) : base + '44';
     ng.fill();
-    ng.strokeStyle = glow > 0.2 ? '#432c4a88' : '#432c4a22';
-    ng.lineWidth = glow > 0.2 ? 1.5 : 1;
+    ng.strokeStyle = glow > 0.2 ? '#432c4a' : '#432c4a25';
+    ng.lineWidth = glow > 0.2 ? 1.6 : 1;
     ng.stroke();
 
-    ng.fillStyle  = glow > 0.2 ? '#432c4a' : '#b0948e';
-    ng.font       = (glow > 0.2 ? 'bold ' : '') + '6.5px DM Mono';
-    ng.textAlign  = 'center';
-    ng.fillText(n.label, p.x, p.y + NODE_R + 8);
+    // ── Label: draw a white backing pill first so edge curves can't bleed through
+    const LABEL_FONT_ACTIVE = 'bold 8px DM Mono';
+    const LABEL_FONT_IDLE   = '7.5px DM Mono';
+    const firing = glow > 0.08;          // any visible glow = "active"
+    ng.font      = firing ? LABEL_FONT_ACTIVE : LABEL_FONT_IDLE;
+    ng.textAlign = 'center';
+    ng.textBaseline = 'top';
+    const labelY  = p.y + NODE_R + 4;
+    const labelW  = ng.measureText(n.label).width;
+    const padX = 3, padY = 1.5;
+    // White pill
+    ng.fillStyle = 'rgba(255,244,238,0.92)';
+    ng.beginPath();
+    const pillX = p.x - labelW / 2 - padX;
+    const pillY = labelY - padY;
+    const pillW = labelW + padX * 2;
+    const pillH = (firing ? 9 : 8.5) + padY * 2;
+    const pillR = 3;
+    ng.moveTo(pillX + pillR, pillY);
+    ng.lineTo(pillX + pillW - pillR, pillY);
+    ng.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + pillR, pillR);
+    ng.lineTo(pillX + pillW, pillY + pillH - pillR);
+    ng.arcTo(pillX + pillW, pillY + pillH, pillX + pillW - pillR, pillY + pillH, pillR);
+    ng.lineTo(pillX + pillR, pillY + pillH);
+    ng.arcTo(pillX, pillY + pillH, pillX, pillY + pillH - pillR, pillR);
+    ng.lineTo(pillX, pillY + pillR);
+    ng.arcTo(pillX, pillY, pillX + pillR, pillY, pillR);
+    ng.closePath();
+    ng.fill();
+    // Label text on top of pill
+    ng.fillStyle = firing ? color : '#3a2535';
+    ng.fillText(n.label, p.x, labelY);
+    ng.textBaseline = 'alphabetic'; // restore default
   });
 }
+
 
 
 // ── Spike-rate chart (P1 love / angry only) ────────────────────────────────────
@@ -950,6 +1207,8 @@ function clearBoard() {
     player.brain = new Brain(net);
     nodeGlow.fill(0);
   }
+  cascade.active = false;
+  updateCascadeUI(0, 'Idle · awaiting social trigger', null);
   player.state   = 'calm';
   player.history = ['CALM'];
   player.last    = time;
@@ -966,6 +1225,14 @@ document.querySelector('#enemy').onclick        = () => spawn('enemy');
 document.querySelector('#friend').onclick       = () => spawn('friend');
 document.querySelector('#removeFlyBtn').onclick = () => removeFly(selectedFly);
 document.querySelector('#clearBoard').onclick   = clearBoard;
+
+const replayCascadeBtn = document.querySelector('#replayCascadeBtn');
+if (replayCascadeBtn) {
+  replayCascadeBtn.onclick = () => {
+    const target = player.state !== 'calm' ? player.state : 'angry';
+    triggerCascade(target, true);
+  };
+}
 
 // Placement mode: which item a click on empty arena space drops
 function setMode(m) {
@@ -996,6 +1263,8 @@ function stopReplay() {
   replaying = false;
   replayEvent = null;
   replayBtn.textContent = '▶ Replay drama';
+  cascade.active = false;
+  updateCascadeUI(0, 'Idle · awaiting social trigger', null);
 }
 replayBtn.onclick = () => {
   if (replaying) return stopReplay();
@@ -1007,7 +1276,8 @@ replayBtn.onclick = () => {
   const go = () => {
     if (i >= list.length) return stopReplay();
     replayEvent = list[i++];
-    replayTimer = setTimeout(go, 1500);
+    if (replayEvent && replayEvent.state !== 'calm') triggerCascade(replayEvent.state, true);
+    replayTimer = setTimeout(go, 2600);
   };
   go();
 };
