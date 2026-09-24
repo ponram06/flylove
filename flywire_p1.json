@@ -1,0 +1,565 @@
+{
+  "_source": "FlyWire FAFB Whole-Brain Connectome (v783)",
+  "_note": "Generated via FlyWire CAVE API (datastack: flywire_fafb_public). Neurons represent the biological Drosophila courtship and aggression circuit: sensory relays (aIP1), central P1/pC1 integration cluster (aSP10), and descending motor command neurons (pIP14). Synapses derived from the real connectome table synapses_nt_v1.",
+  "_label": "FlyWire FAFB Connectome \u00b7 Real neuron IDs & synapses",
+  "neurons": [
+    {
+      "id": "S1",
+      "group": "sensory",
+      "label": "aIP1c-1",
+      "root_id": 720575940625082910,
+      "cell_type": "aIP1c",
+      "desc": "Auditory relay interneuron (aIP1c)"
+    },
+    {
+      "id": "S2",
+      "group": "sensory",
+      "label": "aIP1b-1",
+      "root_id": 720575940628426946,
+      "cell_type": "aIP1b",
+      "desc": "Mechanosensory relay interneuron (aIP1b)"
+    },
+    {
+      "id": "S3",
+      "group": "sensory",
+      "label": "aIP1b-2",
+      "root_id": 720575940639325941,
+      "cell_type": "aIP1b",
+      "desc": "Sensory integrator interneuron (aIP1b)"
+    },
+    {
+      "id": "S4",
+      "group": "sensory",
+      "label": "aIP1b-3",
+      "root_id": 720575940637371992,
+      "cell_type": "aIP1b",
+      "desc": "Antennal lobe relay interneuron (aIP1b)"
+    },
+    {
+      "id": "P1a",
+      "group": "p1",
+      "label": "aSP10a-1",
+      "root_id": 720575940613034602,
+      "cell_type": "aSP10a",
+      "desc": "P1 hub cluster integrator (aSP10a)"
+    },
+    {
+      "id": "P1b",
+      "group": "p1",
+      "label": "aSP10b-1",
+      "root_id": 720575940625802329,
+      "cell_type": "aSP10b",
+      "desc": "P1 hub cluster integrator (aSP10b)"
+    },
+    {
+      "id": "P1c",
+      "group": "p1",
+      "label": "aSP10a-2",
+      "root_id": 720575940636471408,
+      "cell_type": "aSP10a",
+      "desc": "P1 hub cluster integrator (aSP10a)"
+    },
+    {
+      "id": "P1d",
+      "group": "p1",
+      "label": "aSP10a-3",
+      "root_id": 720575940627719294,
+      "cell_type": "aSP10a",
+      "desc": "P1 cluster sustainer (aSP10a)"
+    },
+    {
+      "id": "P1e",
+      "group": "p1",
+      "label": "aSP10a-4",
+      "root_id": 720575940637834301,
+      "cell_type": "aSP10a",
+      "desc": "P1 primary motor relay (aSP10a)"
+    },
+    {
+      "id": "P1f",
+      "group": "p1",
+      "label": "aSP10a-5",
+      "root_id": 720575940619688688,
+      "cell_type": "aSP10a",
+      "desc": "P1 recurrent modulator (aSP10a)"
+    },
+    {
+      "id": "M1",
+      "group": "motor",
+      "label": "pIP14-1",
+      "root_id": 720575940629514296,
+      "cell_type": "pIP14",
+      "desc": "Descending courtship song command (pIP14)"
+    },
+    {
+      "id": "M2",
+      "group": "motor",
+      "label": "pIP14-2",
+      "root_id": 720575940628632057,
+      "cell_type": "pIP14",
+      "desc": "Descending wing extension command (pIP14)"
+    },
+    {
+      "id": "M3",
+      "group": "motor",
+      "label": "pIP14-3",
+      "root_id": 720575940604160172,
+      "cell_type": "pIP14",
+      "desc": "Descending steering / approach command (pIP14)"
+    },
+    {
+      "id": "M4",
+      "group": "motor",
+      "label": "pIP14-4",
+      "root_id": 720575940620402712,
+      "cell_type": "pIP14",
+      "desc": "Descending locomotor speed control (pIP14)"
+    }
+  ],
+  "synapses": [
+    {
+      "pre": "M3",
+      "post": "M4",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940604160172",
+      "post_root_id": "720575940620402712"
+    },
+    {
+      "pre": "M3",
+      "post": "M2",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940604160172",
+      "post_root_id": "720575940628632057"
+    },
+    {
+      "pre": "P1a",
+      "post": "P1f",
+      "w": 0.61,
+      "synapse_count": 4,
+      "pre_root_id": "720575940613034602",
+      "post_root_id": "720575940619688688"
+    },
+    {
+      "pre": "P1a",
+      "post": "P1b",
+      "w": 0.54,
+      "synapse_count": 3,
+      "pre_root_id": "720575940613034602",
+      "post_root_id": "720575940625802329"
+    },
+    {
+      "pre": "P1a",
+      "post": "M2",
+      "w": 0.68,
+      "synapse_count": 5,
+      "pre_root_id": "720575940613034602",
+      "post_root_id": "720575940628632057"
+    },
+    {
+      "pre": "P1a",
+      "post": "M1",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940613034602",
+      "post_root_id": "720575940629514296"
+    },
+    {
+      "pre": "P1a",
+      "post": "P1c",
+      "w": 1.0,
+      "synapse_count": 10,
+      "pre_root_id": "720575940613034602",
+      "post_root_id": "720575940636471408"
+    },
+    {
+      "pre": "P1a",
+      "post": "P1e",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940613034602",
+      "post_root_id": "720575940637834301"
+    },
+    {
+      "pre": "P1f",
+      "post": "P1d",
+      "w": 0.61,
+      "synapse_count": 4,
+      "pre_root_id": "720575940619688688",
+      "post_root_id": "720575940627719294"
+    },
+    {
+      "pre": "P1f",
+      "post": "S2",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940619688688",
+      "post_root_id": "720575940628426946"
+    },
+    {
+      "pre": "P1f",
+      "post": "M2",
+      "w": 0.61,
+      "synapse_count": 4,
+      "pre_root_id": "720575940619688688",
+      "post_root_id": "720575940628632057"
+    },
+    {
+      "pre": "P1f",
+      "post": "P1c",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940619688688",
+      "post_root_id": "720575940636471408"
+    },
+    {
+      "pre": "P1f",
+      "post": "P1e",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940619688688",
+      "post_root_id": "720575940637834301"
+    },
+    {
+      "pre": "M4",
+      "post": "M1",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940620402712",
+      "post_root_id": "720575940629514296"
+    },
+    {
+      "pre": "S1",
+      "post": "P1b",
+      "w": 1.0,
+      "synapse_count": 11,
+      "pre_root_id": "720575940625082910",
+      "post_root_id": "720575940625802329"
+    },
+    {
+      "pre": "S1",
+      "post": "S4",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940625082910",
+      "post_root_id": "720575940637371992"
+    },
+    {
+      "pre": "S1",
+      "post": "P1e",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940625082910",
+      "post_root_id": "720575940637834301"
+    },
+    {
+      "pre": "P1b",
+      "post": "P1c",
+      "w": 0.68,
+      "synapse_count": 5,
+      "pre_root_id": "720575940625802329",
+      "post_root_id": "720575940636471408"
+    },
+    {
+      "pre": "P1b",
+      "post": "S4",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940625802329",
+      "post_root_id": "720575940637371992"
+    },
+    {
+      "pre": "P1b",
+      "post": "S3",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940625802329",
+      "post_root_id": "720575940639325941"
+    },
+    {
+      "pre": "P1d",
+      "post": "P1f",
+      "w": 0.54,
+      "synapse_count": 3,
+      "pre_root_id": "720575940627719294",
+      "post_root_id": "720575940619688688"
+    },
+    {
+      "pre": "P1d",
+      "post": "P1e",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940627719294",
+      "post_root_id": "720575940637834301"
+    },
+    {
+      "pre": "S2",
+      "post": "P1a",
+      "w": 0.74,
+      "synapse_count": 6,
+      "pre_root_id": "720575940628426946",
+      "post_root_id": "720575940613034602"
+    },
+    {
+      "pre": "S2",
+      "post": "P1d",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940628426946",
+      "post_root_id": "720575940627719294"
+    },
+    {
+      "pre": "S2",
+      "post": "S4",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940628426946",
+      "post_root_id": "720575940637371992"
+    },
+    {
+      "pre": "M2",
+      "post": "M3",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940628632057",
+      "post_root_id": "720575940604160172"
+    },
+    {
+      "pre": "M2",
+      "post": "M4",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940628632057",
+      "post_root_id": "720575940620402712"
+    },
+    {
+      "pre": "M1",
+      "post": "M3",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940629514296",
+      "post_root_id": "720575940604160172"
+    },
+    {
+      "pre": "M1",
+      "post": "M4",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940629514296",
+      "post_root_id": "720575940620402712"
+    },
+    {
+      "pre": "M1",
+      "post": "M2",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940629514296",
+      "post_root_id": "720575940628632057"
+    },
+    {
+      "pre": "M1",
+      "post": "P1e",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940629514296",
+      "post_root_id": "720575940637834301"
+    },
+    {
+      "pre": "P1c",
+      "post": "M3",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940636471408",
+      "post_root_id": "720575940604160172"
+    },
+    {
+      "pre": "P1c",
+      "post": "P1a",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940636471408",
+      "post_root_id": "720575940613034602"
+    },
+    {
+      "pre": "P1c",
+      "post": "P1f",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940636471408",
+      "post_root_id": "720575940619688688"
+    },
+    {
+      "pre": "P1c",
+      "post": "M1",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940636471408",
+      "post_root_id": "720575940629514296"
+    },
+    {
+      "pre": "P1c",
+      "post": "S4",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940636471408",
+      "post_root_id": "720575940637371992"
+    },
+    {
+      "pre": "P1c",
+      "post": "P1e",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940636471408",
+      "post_root_id": "720575940637834301"
+    },
+    {
+      "pre": "S4",
+      "post": "P1d",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940637371992",
+      "post_root_id": "720575940627719294"
+    },
+    {
+      "pre": "S4",
+      "post": "S2",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940637371992",
+      "post_root_id": "720575940628426946"
+    },
+    {
+      "pre": "S4",
+      "post": "P1c",
+      "w": 0.74,
+      "synapse_count": 6,
+      "pre_root_id": "720575940637371992",
+      "post_root_id": "720575940636471408"
+    },
+    {
+      "pre": "S4",
+      "post": "S3",
+      "w": 0.54,
+      "synapse_count": 3,
+      "pre_root_id": "720575940637371992",
+      "post_root_id": "720575940639325941"
+    },
+    {
+      "pre": "P1e",
+      "post": "M3",
+      "w": 0.61,
+      "synapse_count": 4,
+      "pre_root_id": "720575940637834301",
+      "post_root_id": "720575940604160172"
+    },
+    {
+      "pre": "P1e",
+      "post": "P1a",
+      "w": 1.0,
+      "synapse_count": 16,
+      "pre_root_id": "720575940637834301",
+      "post_root_id": "720575940613034602"
+    },
+    {
+      "pre": "P1e",
+      "post": "P1f",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940637834301",
+      "post_root_id": "720575940619688688"
+    },
+    {
+      "pre": "P1e",
+      "post": "S1",
+      "w": 0.48,
+      "synapse_count": 2,
+      "pre_root_id": "720575940637834301",
+      "post_root_id": "720575940625082910"
+    },
+    {
+      "pre": "P1e",
+      "post": "M2",
+      "w": 0.8,
+      "synapse_count": 7,
+      "pre_root_id": "720575940637834301",
+      "post_root_id": "720575940628632057"
+    },
+    {
+      "pre": "P1e",
+      "post": "M1",
+      "w": 0.94,
+      "synapse_count": 9,
+      "pre_root_id": "720575940637834301",
+      "post_root_id": "720575940629514296"
+    },
+    {
+      "pre": "P1e",
+      "post": "P1c",
+      "w": 0.8,
+      "synapse_count": 7,
+      "pre_root_id": "720575940637834301",
+      "post_root_id": "720575940636471408"
+    },
+    {
+      "pre": "S3",
+      "post": "P1d",
+      "w": 0.74,
+      "synapse_count": 6,
+      "pre_root_id": "720575940639325941",
+      "post_root_id": "720575940627719294"
+    },
+    {
+      "pre": "S3",
+      "post": "P1c",
+      "w": 0.68,
+      "synapse_count": 5,
+      "pre_root_id": "720575940639325941",
+      "post_root_id": "720575940636471408"
+    },
+    {
+      "pre": "S3",
+      "post": "S4",
+      "w": 0.41,
+      "synapse_count": 1,
+      "pre_root_id": "720575940639325941",
+      "post_root_id": "720575940637371992"
+    },
+    {
+      "pre": "P1b",
+      "post": "P1e",
+      "w": 0.68,
+      "synapse_count": 5
+    },
+    {
+      "pre": "P1c",
+      "post": "P1d",
+      "w": 0.61,
+      "synapse_count": 4
+    },
+    {
+      "pre": "P1c",
+      "post": "M4",
+      "w": 0.54,
+      "synapse_count": 3
+    }
+  ],
+  "love_path": [
+    "S1",
+    "S2",
+    "P1a",
+    "P1b",
+    "P1e",
+    "M1",
+    "M2"
+  ],
+  "angry_path": [
+    "S3",
+    "S4",
+    "P1c",
+    "P1d",
+    "P1e",
+    "M3",
+    "M4"
+  ]
+}
