@@ -80,7 +80,7 @@ let flies  = [player];
 let foods  = [{x:150,y:110,r:31,type:'food'},{x:670,y:375,r:31,type:'food'}];
 let bads   = [{x:650,y:115,r:48,type:'drama'}];
 
-// ── Safe placement helper (Fix 1: enforce minimum separation) ────────────────
+// ── Safe placement helper (keeps new items apart) ─────────────────────────────
 function getSafePosition(x, y, radius) {
   const allExisting = [
     ...flies.map(f => ({ x: f.x, y: f.y, r: f.r })),
