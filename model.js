@@ -153,16 +153,17 @@ const SCENARIOS = {
 };
 
 // Run the model on a fixed stimulus and report what actually carried signal:
-// per-neuron spike counts and per-edge transmitted spikes.
+// per-neuron spike counts, first-spike tick, and per-edge transmitted spikes.
 function probe(net, scenario, ticks = 120, minRate = 0.04) {
   const b = new Brain(net);
   const spikes = new Float32Array(net.neurons.length);
+  const first  = new Int16Array(net.neurons.length).fill(-1);
   const edgeSpikes = new Float32Array(net.edges.length);
   let p1 = 0;
   for (let t = 0; t < ticks; t++) {
     b.tick(scenario);
     net.edges.forEach((e, k) => { if (b.spike[e.from]) edgeSpikes[k]++; });
-    b.spike.forEach((s, i) => { spikes[i] += s; });
+    b.spike.forEach((s, i) => { spikes[i] += s; if (s && first[i] < 0) first[i] = t; });
     p1 += b.p1Rate;
   }
   const active = new Set();
@@ -174,6 +175,7 @@ function probe(net, scenario, ticks = 120, minRate = 0.04) {
     active,
     edges,
     rates: Object.fromEntries(net.neurons.map((n, i) => [n.id, spikes[i] / ticks])),
+    firstSpike: Object.fromEntries(net.neurons.map((n, i) => [n.id, first[i]])),
     meanP1: p1 / ticks,
   };
 }
