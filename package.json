@@ -1,0 +1,13 @@
+{
+  "name": "flymind",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FlyMind: a playful Drosophila social simulation driven by a 14-neuron FlyWire connectome subgraph",
+  "scripts": {
+    "start": "node serve.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
