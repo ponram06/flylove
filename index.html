@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>FlyMind — Fly Dating &amp; Drama</title>
-  <meta name="description" content="FlyMind: a real-time social &amp; emotional simulation of two Drosophila flies, inspired by the FlyWire connectome P1 circuit.">
+  <meta name="description" content="FlyMind: a playful Drosophila social simulation whose brain is a 14-neuron subgraph of the FlyWire connectome.">
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
   <style>
     .arena-wrap { position:relative }
@@ -28,6 +29,19 @@
     }
     #removeFlyBtn.visible { display:inline-flex; align-items:center; gap:5px }
     @keyframes popIn { from{transform:scale(.8);opacity:0} to{transform:scale(1);opacity:1} }
+    .mode-btn.active { box-shadow: inset 0 0 0 2px #805ee1; color: #4f3850 }
+    .dpad { display:none }
+    @media (pointer: coarse) {
+      .dpad {
+        display:grid; position:absolute; right:13px; bottom:13px; z-index:2;
+        grid-template: repeat(2, 44px) / repeat(3, 44px); gap:4px;
+      }
+      .dpad button { padding:0; font-size:16px; opacity:.85; touch-action:none; user-select:none }
+      .dpad .up    { grid-area: 1 / 2 }
+      .dpad .left  { grid-area: 2 / 1 }
+      .dpad .down  { grid-area: 2 / 2 }
+      .dpad .right { grid-area: 2 / 3 }
+    }
     /* Neuron graph canvas */
     #neuronGraph {
       display:block; width:100%; height:auto;
@@ -45,9 +59,9 @@
       <span>dating &amp; drama simulator</span>
     </div>
     <div class="view-toggle" role="group" aria-label="View mode">
-      <button data-view="simple" class="active">SIMPLE ✨</button>
-      <button data-view="brain">BRAIN 🧠</button>
-      <button data-view="circuit">CIRCUITS 🔬</button>
+      <button data-view="simple" class="active" aria-pressed="true">SIMPLE ✨</button>
+      <button data-view="brain" aria-pressed="false">BRAIN 🧠</button>
+      <button data-view="circuit" aria-pressed="false">CIRCUITS 🔬</button>
     </div>
     <div class="live">● SIMULATION LIVE</div>
   </header>
@@ -55,9 +69,10 @@
   <section class="hud">
     <b>⌨ WASD</b> = move <i>·</i>
     <b>💘 / 😠 / 🙂</b> = spawn <i>·</i>
-    <b>click fly</b> = select &amp; delete <i>·</i>
+    <b>click fly / N</b> = select, Delete = remove <i>·</i>
+    <b>click empty space</b> = drop snack or drama zone <i>·</i>
     <b>get close</b> = trigger emotion
-    <span>Wired with real FlyWire whole-brain connectome synapses (v783 FAFB)</span>
+    <span>Brain: 14 FlyWire neurons wired by <strong data-fact="synapses">…</strong> real synapses</span>
   </section>
 
   <section class="controls">
@@ -65,8 +80,8 @@
     <button id="enemy"  class="enemy">Deploy Enemy &#x1F620;</button>
     <button id="friend" class="friend">Deploy Friend &#x1F60A;</button>
     <button id="removeFlyBtn" class="enemy" aria-label="Remove selected fly">&#x1F5D1; Remove fly</button>
-    <button id="food">+ snack &#x1F353;</button>
-    <button id="bad">+ drama zone &#x2620;</button>
+    <button id="food" class="mode-btn" aria-pressed="true" title="Clicking empty arena space drops a snack">Place: snack &#x1F353;</button>
+    <button id="bad" class="mode-btn" aria-pressed="false" title="Clicking empty arena space drops a drama zone">Place: drama zone &#x2620;</button>
     <button id="replay">&#x25B6; Replay drama</button>
     <button id="pause">&#x2161; Pause</button>
     <button id="clearBoard" class="clear-btn">&#x1F9F9; Clear board</button>
@@ -91,11 +106,17 @@
           <span>THE LITTLE WORLD</span>
           <h1>Fly A's dating arena</h1>
         </div>
-        <small>Click a fly to select · Delete/Backspace to remove</small>
+        <small>Click a fly (or press N) to select · Delete/Backspace to remove</small>
       </div>
       <div class="arena-wrap">
-        <canvas id="arena" width="820" height="500"></canvas>
+        <canvas id="arena" width="820" height="500" role="img" aria-label="Arena with Fly A and any deployed flies, snacks and drama zones"></canvas>
         <div id="arenaTip" class="arena-tip" role="status">Hover a character, snack, or drama zone</div>
+        <div class="dpad" aria-label="Move Fly A">
+          <button data-key="ArrowUp" class="up" aria-label="Move up">▲</button>
+          <button data-key="ArrowLeft" class="left" aria-label="Move left">◀</button>
+          <button data-key="ArrowDown" class="down" aria-label="Move down">▼</button>
+          <button data-key="ArrowRight" class="right" aria-label="Move right">▶</button>
+        </div>
       </div>
       <div class="arena-foot">
         <span><i class="player-dot"></i> Fly A · you</span>
@@ -115,17 +136,17 @@
         <div class="card-head">
           <div>
             <span>REAL-TIME ACTIVITY</span>
-            <h2>P1 circuit — live firing</h2>
+            <h2>Live firing — 14 FlyWire neurons</h2>
           </div>
-          <small>glow = spiking</small>
+          <small>glow = spike this tick</small>
         </div>
         <canvas id="neuronGraph" width="310" height="210"></canvas>
         <p id="neuronMeaning" class="neuron-meaning">P1 circuit is waiting for a social signal.</p>
         <p class="neuron-honesty">
-          Wired directly from the FlyWire whole-brain connectome (v783 FAFB) via CAVEclient:
-          4 sensory (aIP1) &middot; 6 P1 cluster (aSP10) &middot; 4 motor (pIP14) = 14 real biological neurons.
-          Edge thickness represents 3,300+ real synaptic connections (synapses_nt_v1).
-          Glow = that neuron spiked this tick.
+          One leaky integrate-and-fire unit per FlyWire neuron: 4 sensory (aIP1) &middot; 6 P1 cluster (aSP10) &middot; 4 motor (pIP14).
+          Only sensory units get input from the arena; P1 and motor units are driven purely by spikes over the
+          <span data-fact="edges">…</span> real edges (<span data-fact="synapses">?</span> synapses from <code>synapses_nt_v1</code>).
+          Wire thickness = synapse count. Glow = that neuron spiked this tick.
         </p>
         <button id="openCircuitViewBtn" class="circuit-link-btn">&#x1F52C; Per-Emotion Subcircuits View &rarr;</button>
       </section>
@@ -160,11 +181,11 @@
       <div class="card-head">
         <div>
           <span>LAST 30 SECONDS</span>
-          <h2>P1 spike-rate story</h2>
+          <h2>Love vs anger readout</h2>
         </div>
         <div class="keys">
-          <b>💘 P1 low → love</b>
-          <b>😠 P1 high → angry</b>
+          <b>💘 love readout</b>
+          <b>😠 angry readout</b>
         </div>
       </div>
       <canvas id="chart" width="820" height="190"></canvas>
@@ -176,13 +197,13 @@
   <section class="circuit-explorer card" id="circuitExplorer">
     <div class="circuit-view-head">
       <div>
-        <span class="subhead">DEDICATED PER-EMOTION SUBCIRCUIT VIEW</span>
-        <h2>14-Neuron P1 Functional Connection Explorer</h2>
+        <span class="subhead">WHAT THE MODEL DOES FOR EACH SITUATION</span>
+        <h2>14-Neuron Connectome Explorer</h2>
       </div>
       <div class="circuit-view-controls">
         <label class="toggle-label" title="Dim or hide neurons and wires not participating in this emotion">
           <input type="checkbox" id="isolatePathToggle" checked>
-          <span>Highlight active subcircuit only</span>
+          <span>Show recruiting wires only</span>
         </label>
         <button id="animSubcircuitBtn" class="pulse-btn">&#x25B6; Animate signal transmission</button>
       </div>
@@ -190,26 +211,26 @@
 
     <div class="circuit-grid">
       <!-- 1. LEFT: Emotion selector list -->
-      <aside class="circuit-selector" role="tablist" aria-label="Select state to view circuit path">
+      <aside class="circuit-selector">
         <div class="selector-title">SELECT EMOTION / STATE</div>
-        <div id="emotionButtons" class="emotion-btn-list"></div>
+        <div id="emotionButtons" class="emotion-btn-list" role="tablist" aria-orientation="vertical" aria-label="Situation to simulate"></div>
       </aside>
 
       <!-- 2. CENTER: Subcircuit diagram canvas -->
       <section class="circuit-canvas-card">
         <div class="canvas-banner">
-          <div id="subcircuitTitle"><b>Love</b> &middot; courtship-leaning</div>
-          <small id="subcircuitPathSummary">aIP1c-1, aIP1b-1 &rarr; aSP10a-1, aSP10b-1, aSP10a-4 &rarr; pIP14-1, pIP14-2</small>
+          <div id="subcircuitTitle">Loading&hellip;</div>
+          <small id="subcircuitPathSummary"></small>
         </div>
         <div class="canvas-wrap">
-          <canvas id="subcircuitCanvas" width="500" height="320"></canvas>
+          <canvas id="subcircuitCanvas" width="500" height="320" role="img" aria-label="Neurons that fire, and the wires that recruited them, for the selected situation"></canvas>
           <div id="subcircuitTip" class="subcircuit-tip"></div>
         </div>
         <div class="canvas-legend">
           <span><i class="dot-sensory"></i> Sensory (aIP1)</span>
           <span><i class="dot-p1"></i> P1 Hub (aSP10)</span>
           <span><i class="dot-motor"></i> Motor Command (pIP14)</span>
-          <span class="legend-note">&middot; Wire thickness = real connectome synaptic weight</span>
+          <span class="legend-note">&middot; Wire thickness = synapse count &middot; animation = order neurons were recruited in the model</span>
         </div>
       </section>
 
@@ -218,22 +239,22 @@
         <div class="detail-section">
           <div class="section-title">SIMULATION MODEL STATUS</div>
           <div class="metric-row">
-            <span class="metric-label">Active Simplified Neurons:</span>
-            <strong id="activeNeuronCount" class="metric-val">7 / 14 active</strong>
+            <span class="metric-label">Neurons that fire:</span>
+            <strong id="activeNeuronCount" class="metric-val">&hellip;</strong>
           </div>
           <div class="metric-row">
-            <span class="metric-label">Modeled Biological Cell Types:</span>
+            <span class="metric-label">Recruited, in firing order:</span>
             <div id="modeledCellTypes" class="type-chips"></div>
           </div>
           <div class="metric-row">
             <span class="metric-label">Connection Weight Type:</span>
             <div class="legend-box">
-              <div class="legend-bar"><i class="excitatory-bar"></i> All connections modeled as excitatory LIF drive</div>
-              <small class="legend-honesty">Our live 14-neuron simulation models all 54 synaptic links as excitatory integrate-and-fire conductances. Inhibitory conductances are not separately calculated (honest limitation).</small>
+              <div class="legend-bar"><i class="excitatory-bar"></i> Spike &times; synapse-count weight, LIF with adaptation</div>
+              <small class="legend-honesty" data-fact="sign"></small>
             </div>
           </div>
           <div class="metric-row">
-            <span class="metric-label">Behavioral Output:</span>
+            <span class="metric-label">Input &amp; behaviour:</span>
             <p id="stateBehaviorDesc" class="behavior-desc"></p>
           </div>
         </div>
@@ -241,13 +262,12 @@
         <!-- Clearly marked supporting real data -->
         <div class="supporting-data-box">
           <div class="data-head">
-            <span class="badge-verify">&#x2714; VERIFICATION CONTEXT</span>
-            <h4>Supporting Real FlyWire Data</h4>
+            <span class="badge-verify">&#x2714; FROM flywire_p1.json</span>
+            <h4>Wires that recruited a neuron</h4>
           </div>
           <p class="data-disclaimer">
-            <strong>Honesty constraint:</strong> Live simulation uses <strong>14 simplified neurons</strong>.
-            The connectome data below was queried via CAVEclient from FlyWire v783 FAFB (<code>synapses_nt_v1</code>)
-            as verification grounding, not live simulation scale.
+            Each row is a real edge from FlyWire FAFB (<code>synapses_nt_v1</code>) whose presynaptic neuron fired
+            before the postsynaptic one in the model. Synapse counts are read from the data file, not typed in.
           </p>
           <div id="supportingDataList" class="supporting-data-table-wrap"></div>
         </div>
@@ -258,9 +278,10 @@
 </main><!-- /#app -->
 
 <footer>
-  Functional-group simulation inspired by real <i>Drosophila</i> P1/pC1 circuits (Hoopfer et al. 2015, Deutsch et al. 2020).
-  Not a full anatomical reconstruction — no raw FlyWire connectome data.
-  Friend fly: no dedicated "friendship neuron" exists in fly research; represents neutral/low P1 activation.
+  A toy model, not a biological prediction. The brain is a 14-neuron subgraph of the FlyWire FAFB connectome with real synapse counts;
+  the mapping from arena events to sensory neurons, the neuron dynamics, and the emotion readouts are modelling choices.
+  FAFB is a female brain, while P1 courtship neurons are male-specific (the female counterpart is pC1); cell-type labels come from the data file.
+  Inspired by work on P1/pC1 circuits (Hoopfer et al. 2015, Deutsch et al. 2020). Friend fly: there is no known "friendship neuron" in flies.
 </footer>
 
 <!-- Onboarding -->
@@ -275,6 +296,7 @@
   </div>
 </div>
 
+<script src="model.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
