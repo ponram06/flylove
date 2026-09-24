@@ -36,27 +36,18 @@ const FLY_COL = {
 
 const keys = {}, events = [], samples = [];
 let running = true, time = 0, mode = 'food';
-let replaying = false, lastLive = null, p1Flash = 0;
+let replaying = false, lastLive = null;
 let selectedFly = null;
+const DEBUG = new URLSearchParams(location.search).has('debug');
 
-// ── Circuit topology (loaded async from flywire_p1.json) ──────────────────────
-let circuitData = null;
-let nodePos     = null; // built once after circuitData loads
-fetch('flywire_p1.json')
-  .then(r => r.json())
-  .then(d => { circuitData = d; })
-  .catch(() => { circuitData = null; });
-
-// Per-neuron afterglow (index matches LIF .n array order within each group)
-const nodeGlow = {
-  sensory : new Float32Array(4),
-  p1      : new Float32Array(6),
-  motor   : new Float32Array(4),
-};
-const GLOW_DECAY = 0.80; // per frame at 30fps → 50% gone in ~3 frames
+// ── Connectome + model (loaded from flywire_p1.json, see bootstrap) ──────────
+const { Connectome, Brain, dominant, probe, SCENARIOS, clamp } = window.FlyModel;
+let net      = null;  // Connectome built from flywire_p1.json
+let nodePos  = null;  // live-graph layout, keyed by neuron id
+let nodeGlow = null;  // per-neuron afterglow of real spikes (1 on spike, decays)
+const GLOW_DECAY = 0.80; // per tick at 30Hz -> half gone in ~3 ticks
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const clamp = (n,a,b) => Math.max(a, Math.min(b, n));
 const dist  = (a,b)   => Math.hypot(a.x-b.x, a.y-b.y);
 const unit  = (a,b)   => { const l=Math.hypot(b.x-a.x,b.y-a.y)||1; return{x:(b.x-a.x)/l,y:(b.y-a.y)/l} };
 
@@ -71,75 +62,6 @@ function blendHex(hex1, hex2, t) {
   return `rgb(${Math.round(r1*(1-t)+r2*t)},${Math.round(g1*(1-t)+g2*t)},${Math.round(b1*(1-t)+b2*t)})`;
 }
 
-// ── LIF Neuron group ──────────────────────────────────────────────────────────
-class LIF {
-  constructor(name, n, t=.85) {
-    this.name = name;
-    this.n = Array.from({length:n}, ()=>({v:0,s:0}));
-    this.t = t; this.rate = 0;
-  }
-  tick(drive, linked=0) {
-    let z = 0;
-    this.n.forEach((q,i) => {
-      q.v *= .78;
-      q.v += drive*(.8+i*.03) + linked*.14;
-      q.s  = 0;
-      if (q.v > this.t) { q.v=0; q.s=1; z++; }
-    });
-    const inst = z / this.n.length;
-    this.rate = this.rate * 0.65 + inst * 0.35;
-    return this.rate;
-  }
-}
-
-// ── Brain — P1 circuit (Love / Angry / Chill / Happy / Sad) ──────────────────
-// Snack contact: reward-like signal → mild P1 drive, no threat → love-leaning
-// Drama zone:    stress/arousal signal → P1 drive with simulated threat → angry-leaning
-// Friend fly:    calm social presence → gentle baseline P1 drive (~20-25%), no courtship
-// Honest label: all outputs run through the SAME P1 group, not separate circuits.
-class Brain {
-  constructor() {
-    this.social = new LIF('Social sensory', 4, .74);
-    this.p1     = new LIF('P1 group',       6, .83);
-    this.motor  = new LIF('Motor group',    4, .8);
-    this.r = { love:0, angry:0, happy:0, sad:0, chill:0 };
-  }
-  tick(s) {
-    // Social drive (fly proximity)
-    const so = this.social.tick(s.social);
-    // Food adds a reward-like low P1 drive (no threat → positive-leaning)
-    const foodDrive  = s.food  ? 0.48 : 0;
-    // Drama adds an arousal drive with simulated threat component
-    const dramaDrive = s.sad   ? 0.62 : 0;
-    const dramaThreat= s.sad   ? 0.55 : 0;
-    // Combined P1 drive = max of social and environmental inputs
-    const totalDrive = Math.max(s.social, foodDrive, dramaDrive);
-    const totalLinked= so;
-    const p1 = this.p1.tick(totalDrive, totalLinked);
-    // Effective threat blends social threat with drama stress
-    const effThreat = Math.max(s.threat, dramaThreat);
-
-    // Love: only eligible when near Lover fly (no threat, no friend)
-    const isCourtshipEligible = !s.friendNear && effThreat < 0.20 && s.isLover;
-    this.r.love  = isCourtshipEligible ? clamp(p1 * 1.45, 0, 1) : 0;
-
-    // Aggression (angry): triggers whenever Enemy threat is present and P1 is aroused (>18%)
-    this.r.angry = (s.threat > 0.20 && p1 > 0.18) ? clamp(p1 * s.threat * 1.6, 0.25, 1) : 0;
-
-    // Happy: appetitive reward contact from snack
-    this.r.happy = s.food ? clamp(p1 * 1.30, 0.25, 1) : 0;
-
-    // Sad / Stressed: drama zone stress arousal
-    this.r.sad   = s.sad ? clamp(p1 * 1.35, 0.30, 1) : 0;
-
-    // Chill: calm social presence when near friend
-    this.r.chill = s.friendNear ? clamp(p1 * 1.1, 0.18, 0.40) : 0;
-
-    this.motor.tick(Math.max(this.r.love, this.r.angry, this.r.happy, this.r.sad, this.r.chill), p1);
-    return this.r;
-  }
-}
-
 // ── Fly factory ───────────────────────────────────────────────────────────────
 let nextId = 1;
 const mk = (type, px, py) => ({
@@ -147,7 +69,7 @@ const mk = (type, px, py) => ({
   type, x:px, y:py,
   r     : type==='player' ? 24 : 22,
   vx:0, vy:0, h:0,
-  brain : new Brain(),
+  brain : null,
   state : 'calm',
   history : ['CALM'],
   last: 0, search: 0, trail: []
@@ -255,7 +177,7 @@ function sense(f) {
 
   return {
     social,
-    threat     : enemyNear ? clamp((150-de)/105,0,1) : 0,
+    threat     : enemyNear ? clamp((150-de)/115, 0.05, 1) : 0,
     food       : foods.some(q => dist(f,q)<70) ? 1 : 0,
     sad        : inDrama,
     friendNear,
@@ -265,26 +187,16 @@ function sense(f) {
   };
 }
 
-// ── Dominant emotion ──────────────────────────────────────────────────────────
-// Priority: angry > love > sad > happy > chill > calm
-function dominant(r, friendNear) {
-  if (friendNear && r.angry === 0) return 'chill';
-  let k='calm', v=.2;
-  for (const q of ['sad','happy','love','angry'])
-    if (r[q] > v) { k=q; v=r[q]; }
-  if (k==='calm' && friendNear) k='chill';
-  return k;
-}
-
 // ── Copy text per state ───────────────────────────────────────────────────────
 function words(s) {
+  // [headline, what the senses picked up, motor choice]
   return {
-    calm  : ['Fly A is just chilling \u2728',            'No dominant circuit is firing',                          'P1 circuit: baseline',                              'explore the arena'],
-    love  : ['Fly A is currently smitten \uD83D\uDC98',  'Lover proximity sensor fired',                          'P1 group, low/mid drive \u2192 love-leaning',        'orient and flutter closer'],
-    angry : ['Fly A is throwing hands \uD83E\uDD4A',     'Enemy proximity sensor fired',                          'P1 group, high drive \u2192 angry-leaning',          'brace and evade the lunge'],
-    chill : ['Fly A is vibing with Friend \uD83D\uDE0C', 'Friend proximity sensor fired \u2014 calm social cue',   'P1 circuit: calm social presence (~20% baseline)',  'hold comfortable proximity'],
-    happy : ['Fly A found a snack! \uD83C\uDF89',        'Snack reached \u2192 reward-like signal \u2192 P1 low/mid', 'P1 group, food drive \u2192 calm/positive-leaning', 'linger and reinforce this spot'],
-    sad   : ['Fly A is stressed out \uD83D\uDE2C',       'Drama zone detected \u2192 stress response \u2192 P1',  'P1 group, arousal drive \u2192 angry-leaning',      'escape and avoid this area'],
+    calm  : ['Fly A is just chilling ✨',            'Nothing in sensory range',                        'explore the arena'],
+    love  : ['Fly A is currently smitten 💘',        'Lover in range: song + touch sensory neurons fire', 'orient and flutter closer'],
+    angry : ['Fly A is throwing hands 🥊',           'Enemy in range: threat sensory neurons fire',       'brace and evade the lunge'],
+    chill : ['Fly A is vibing with Friend 😌',       'Friend in range: mild proximity cue',               'hold comfortable proximity'],
+    happy : ['Fly A found a snack! 🎉',              'Snack contact: touch sensory neuron fires',         'linger and reinforce this spot'],
+    sad   : ['Fly A is stressed out 😬',             'Drama zone: aversive sensory neurons fire',         'escape and avoid this area'],
   }[s];
 }
 
@@ -294,37 +206,48 @@ function change(s) {
   player.history.unshift(s.toUpperCase());
   player.history = player.history.slice(0,3);
   player.last = time;
-  triggerCascade(s); // Initiate staged circuit cascade immediately
 
-  if (s==='love'||s==='angry') {
-    p1Flash = 10;
-    spawnFloatie(s==='love' ? '\uD83D\uDC98' : '\uD83D\uDCA2', player.x, player.y);
-  } else if (s==='chill') {
-    spawnFloatie('\uD83D\uDE0C', player.x, player.y);
-  } else if (s==='happy') {
-    p1Flash = 6;
-    spawnFloatie('\uD83C\uDF89', player.x, player.y);
-  } else if (s==='sad') {
-    p1Flash = 8;
-    spawnFloatie('\uD83D\uDE2C', player.x, player.y);
-  }
+  const floatie = { love:'💘', angry:'💢', chill:'😌', happy:'🎉', sad:'😬' }[s];
+  if (floatie) spawnFloatie(floatie, player.x, player.y);
 
-  const e = { state:s, parts:words(s), rates:{...player.brain.r} };
+  // Snapshot what the network was doing so replay can show it
+  const p1pct = Math.round(player.brain.p1Rate * 100);
+  const e = { state:s, parts:words(s), status:getLiveP1Status(s, p1pct), rates:Float32Array.from(player.brain.rate) };
   events.push(e);
+  if (events.length > MAX_EVENTS) events.shift();
   lastLive = e;
-  if (!replaying) trace(e, false);
 }
+const MAX_EVENTS = 60;
 
-// ── Causal trace panel ────────────────────────────────────────────────────────
-function trace(e, replay) {
-  document.querySelector('#traceMode').textContent = replay ? 'REPLAY' : 'LIVE';
+// ── Causal trace panel (live, or the event being replayed) ───────────────────
+let replayEvent = null;
+function renderTrace() {
+  if (!player.brain) return;
+  const live = !replayEvent;
+  const e = replayEvent || {
+    state : player.state,
+    parts : words(player.state),
+    status: getLiveP1Status(player.state, Math.round(player.brain.p1Rate * 100)),
+  };
+  setText('#traceMode', live ? 'LIVE' : 'REPLAY');
   const el = document.querySelector('#explanation');
   el.style.borderColor = C[e.state] || C.calm;
-  el.innerHTML = `
-    <p><strong>FLY A \u00B7 ${e.state.toUpperCase()}${replay?' \u00B7 REPLAY':''}</strong></p>
-    <p>01 \u00B7 ${e.parts[0]}</p>
-    <p>02 \u00B7 ${e.parts[1]} \u2192 <strong>${e.parts[2]}</strong></p>
-    <p>03 \u00B7 Motor choice: <strong>${e.parts[3]}</strong></p>`;
+  setHTML(el, `
+    <p><strong>FLY A · ${e.state.toUpperCase()} · ${live ? 'LIVE' : 'REPLAY'}</strong></p>
+    <p>01 · ${e.parts[0]}</p>
+    <p>02 · ${e.parts[1]} → <strong>${e.status}</strong></p>
+    <p>03 · Motor choice: <strong>${e.parts[2]}</strong></p>`);
+}
+
+// Only touch the DOM when content actually changes (render runs every frame)
+const domCache = new WeakMap();
+function setHTML(el, html) {
+  if (typeof el === 'string') el = document.querySelector(el);
+  if (el && domCache.get(el) !== html) { el.innerHTML = html; domCache.set(el, html); }
+}
+function setText(el, text) {
+  if (typeof el === 'string') el = document.querySelector(el);
+  if (el && el.textContent !== text) el.textContent = text;
 }
 
 // ── Movement ──────────────────────────────────────────────────────────────────
@@ -406,95 +329,71 @@ function separateVisual() {
   }
 }
 
-// ── Per-neuron afterglow update (call AFTER brain.tick) ───────────────────────
+// ── Per-neuron afterglow of real spikes (call AFTER brain.tick) ──────────────
 function updateNodeGlow() {
-  const b = player.brain;
-  [
-    [nodeGlow.sensory, b.social],
-    [nodeGlow.p1,      b.p1   ],
-    [nodeGlow.motor,   b.motor],
-  ].forEach(([gArr, lif]) => {
-    lif.n.forEach((nrn, i) => {
-      if (nrn.s) gArr[i] = 1.0;
-      else        gArr[i] = Math.max(0, gArr[i] * GLOW_DECAY);
-    });
-  });
+  const sp = player.brain.spike;
+  for (let i = 0; i < nodeGlow.length; i++) nodeGlow[i] = sp[i] ? 1 : nodeGlow[i] * GLOW_DECAY;
 }
 
-// ── Main tick ─────────────────────────────────────────────────────────────────
-function tick() {
-  if (!running && !replaying) return;
+// ── Simulation step (fixed 30Hz) ──────────────────────────────────────────────
+const SAMPLE_EVERY = 0.25, MAX_SAMPLES = 120; // chart keeps 30s of history
+let nextSampleAt = 0;
+
+function step() {
   time += dt;
+  movePlayer();
+  flies.slice(1).forEach(moveNPC);
+  separate(); separateVisual();
 
-  if (!replaying) {
-    movePlayer();
-    flies.slice(1).forEach(moveNPC);
-    separate(); separateVisual();
+  const s  = sense(player);
+  const r  = player.brain.tick(s);
+  updateNodeGlow(); // reads spikes immediately after brain tick
+  const st = dominant(r, s.friendNear);
+  if (DEBUG && Math.floor(time) !== Math.floor(time - dt)) debugLog(s, r, st);
 
-    const s  = sense(player);
-    const r  = player.brain.tick(s);
-    updateNodeGlow(); // reads .s immediately after brain tick
-    const st = dominant(r, s.friendNear);
-    const p1pct = Math.round(player.brain.p1.rate * 100);
+  // Leave anger right away once the enemy is out of range
+  const leaveAngry = player.state === 'angry' && s.threat === 0;
+  if (st !== player.state && (time-player.last > .35 || leaveAngry)) change(st);
 
-    // ── Diagnostic console.log on every tick (Required Debugging Step 1) ─────────
-    const entityList = [
-      ...flies.slice(1).map(f => `${f.type}#${f.id}@(${Math.round(f.x)},${Math.round(f.y)}) d=${dist(player,f).toFixed(1)}px`),
-      ...foods.map((fd, i) => `snack#${i+1}@(${Math.round(fd.x)},${Math.round(fd.y)}) d=${dist(player,fd).toFixed(1)}px`),
-      ...bads.map((bd, i) => `drama#${i+1}@(${Math.round(bd.x)},${Math.round(bd.y)}) d=${dist(player,bd).toFixed(1)}px`)
-    ];
-    console.log(
-      `[FlyMind Tick] Fly A: (${Math.round(player.x)}, ${Math.round(player.y)}) | ` +
-      `Entities: [${entityList.join(', ') || 'none'}] | ` +
-      `P1: ${p1pct}% | State: ${player.state} (target: ${st}) | ` +
-      `r: {love:${r.love.toFixed(2)}, angry:${r.angry.toFixed(2)}, chill:${r.chill.toFixed(2)}, happy:${r.happy.toFixed(2)}, sad:${r.sad.toFixed(2)}}`
-    );
+  flies.forEach(f => {
+    f.trail.push({x:f.x, y:f.y});
+    if (f.trail.length > 16) f.trail.shift();
+  });
 
-    const forceLeaveAngry = (player.state === 'angry' && s.threat < 0.15 && p1pct < 18);
-    if (st !== player.state && (time-player.last > .35 || forceLeaveAngry)) change(st);
-    if (p1Flash > 0) p1Flash--;
+  floaties.forEach(fl => {
+    fl.y    += fl.vy * dt;
+    fl.life -= dt;
+    fl.alpha = Math.max(0, fl.life/1.6);
+  });
+  floaties = floaties.filter(fl => fl.life>0);
 
-    // Loop or sustain circuit cascade while in an emotional interaction
-    if (player.state !== 'calm' && player.state !== 'chill') {
-      if (!cascade.active || cascade.state !== player.state || (time - cascade.startTime >= CASCADE_DURATION + 0.35)) {
-        triggerCascade(player.state);
-      }
-    } else if (player.state === 'chill') {
-      // Retrigger chill cascade with a calm 0.5s pause so the circuit continues showing transmission
-      if (!cascade.active || cascade.state !== 'chill' || (time - cascade.startTime >= CASCADE_DURATION + 0.50)) {
-        triggerCascade('chill');
-      }
-    } else {
-      if (cascade.active && time - cascade.startTime >= CASCADE_DURATION) {
-        cascade.active = false;
-      }
-    }
-
-    flies.slice(1).forEach(f => f.brain.tick({
-      social : dist(f,player)<145 ? 1 : 0,
-      threat : f.type==='enemy' ? 1 : 0,
-      food   : 0, sad: false, friendNear: false
-    }));
-
-    flies.forEach(f => {
-      f.trail.push({x:f.x, y:f.y});
-      f.trail = f.trail.slice(-16);
-    });
-
-    // Floaties tick
-    floaties.forEach(fl => {
-      fl.y    += fl.vy * dt;
-      fl.life -= dt;
-      fl.alpha = Math.max(0, fl.life/1.6);
-    });
-    floaties = floaties.filter(fl => fl.life>0);
-
-    if (Math.floor(time*4) > samples.length) {
-      samples.push({love:r.love, angry:r.angry});
-      if (samples.length>120) samples.shift();
-    }
+  if (time >= nextSampleAt) {
+    samples.push({love:r.love, angry:r.angry});
+    if (samples.length > MAX_SAMPLES) samples.shift();
+    nextSampleAt += SAMPLE_EVERY;
   }
+}
 
+// Once-a-second state dump, enabled with ?debug in the URL
+function debugLog(s, r, st) {
+  const entities = [
+    ...flies.slice(1).map(f => `${f.type}#${f.id} d=${dist(player,f).toFixed(0)}`),
+    ...foods.map((fd, i) => `snack#${i+1} d=${dist(player,fd).toFixed(0)}`),
+    ...bads.map((bd, i) => `drama#${i+1} d=${dist(player,bd).toFixed(0)}`),
+  ];
+  console.log(`[FlyMind] P1 ${Math.round(player.brain.p1Rate*100)}% | ${player.state} -> ${st} | ` +
+    Object.entries(r).map(([k,v]) => `${k}:${v.toFixed(2)}`).join(' ') + ` | ${entities.join(', ') || 'none'}`);
+}
+
+// ── Main loop: fixed-step simulation, render every animation frame ───────────
+let lastFrame = null, acc = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (lastFrame !== null && running && !replaying && player.brain) {
+    acc = Math.min(acc + (now - lastFrame) / 1000, 0.25); // cap catch-up after tab switches
+    while (acc >= dt) { step(); acc -= dt; }
+  }
+  lastFrame = now;
   render();
 }
 
@@ -711,7 +610,7 @@ function render() {
   // UI panels
   callout();
   telemetry();
-  syncTraceColor();
+  renderTrace();
   drawNeuronGraph();
   drawChart();
 }
@@ -723,64 +622,79 @@ const CALLOUT_BG = {
   angry : 'linear-gradient(105deg,#7a1d1d,#c94040)',
   chill : 'linear-gradient(105deg,#1a5f54,#52b8a0)',
   happy : 'linear-gradient(105deg,#1d6b43,#40b981)',
-  sad   : 'linear-gradient(105deg,#2d3a6b,#5a6ee8)',
+  sad   : 'linear-gradient(105deg,#8a4512,#e07a2a)',
 };
 const CALLOUT_AVATAR = {
-  calm:'\uD83E\uDEB0', love:'\uD83D\uDC98', angry:'\uD83E\uDD4A',
-  chill:'\uD83D\uDE0C', happy:'\uD83C\uDF89', sad:'\uD83D\uDE30'
+  calm:'🪰', love:'💘', angry:'🥊', chill:'😌', happy:'🎉', sad:'😬'
 };
 
-// ── Live unified P1 status helper (prevents contradictory UI text) ───────────
+// ── One description of P1 activity, shared by callout, graph caption, trace ──
+// Every emotion is read out from the same P1 population plus context, so the
+// text names the context instead of implying a separate circuit per emotion.
 function getLiveP1Status(state, p1pct) {
-  if (state === 'angry') return `P1 group, high drive (${p1pct}%) \u2192 angry-leaning`;
-  if (state === 'love')  return `P1 group, low/mid drive (${p1pct}%) \u2192 love-leaning`;
-  if (state === 'chill') return `P1 circuit, calm social presence (${p1pct}%) \u2192 neutral baseline`;
-  if (state === 'happy') return `P1 group, food reward drive (${p1pct}%) \u2192 appetitive-leaning`;
-  if (state === 'sad')   return `P1 group, stress arousal drive (${p1pct}%) \u2192 escape-leaning`;
-  if (p1pct < 15)        return `P1 circuit: baseline resting (${p1pct}%)`;
-  return `P1 circuit: transient drive (${p1pct}%)`;
+  const ctx = {
+    angry: 'enemy threat → aggression readout',
+    love : 'lover, no threat → courtship readout',
+    chill: 'friend nearby → calm readout',
+    happy: 'snack contact → reward readout',
+    sad  : 'drama zone → stress readout',
+  }[state];
+  if (ctx) return `P1 ${p1pct}% active, ${ctx}`;
+  return p1pct < 5 ? `P1 at rest (${p1pct}%)` : `P1 ${p1pct}% active, no dominant readout`;
 }
 
 function callout() {
-  const p1pct = Math.round(player.brain.p1.rate * 100);
-  const statusDesc = getLiveP1Status(player.state, p1pct);
-  const p  = words(player.state);
-  const el = document.querySelector('#callout');
-  el.style.background = CALLOUT_BG[player.state] || CALLOUT_BG.calm;
-  document.querySelector('.avatar').textContent         = CALLOUT_AVATAR[player.state];
-  document.querySelector('#calloutTitle').textContent   = p[0];
-  document.querySelector('#calloutSub').textContent     = 'Circuit: '+statusDesc+'. Motor: '+p[3]+'.';
+  if (!player.brain) return;
+  const p = words(player.state);
+  const statusDesc = getLiveP1Status(player.state, Math.round(player.brain.p1Rate * 100));
+  document.querySelector('#callout').style.background = CALLOUT_BG[player.state] || CALLOUT_BG.calm;
+  setText('.avatar', CALLOUT_AVATAR[player.state]);
+  setText('#calloutTitle', p[0]);
+  setText('#calloutSub', 'Circuit: '+statusDesc+'. Motor: '+p[2]+'.');
 }
 
 // ── Telemetry ─────────────────────────────────────────────────────────────────
 function telemetry() {
+  if (!player.brain) return;
   const col = C[player.state] || C.calm;
-  document.querySelector('#telemetry').innerHTML = `
+  setHTML('#telemetry', `
     <div class="metric"><small>DOMINANT</small><b style="color:${col}">${player.state.toUpperCase()}</b></div>
-    <div class="metric"><small>HISTORY</small><b>${player.history.join(' \u2192 ')}</b></div>
-    <div class="metric"><small>P1 DRIVE</small><b>${player.brain.p1.rate.toFixed(2)}</b></div>
-    <div class="metric"><small>MOTOR</small><b>${player.brain.motor.rate.toFixed(2)}</b></div>`;
+    <div class="metric"><small>HISTORY</small><b>${player.history.join(' → ')}</b></div>
+    <div class="metric"><small>P1 RATE</small><b>${player.brain.p1Rate.toFixed(2)}</b></div>
+    <div class="metric"><small>MOTOR RATE</small><b>${player.brain.motorRate.toFixed(2)}</b></div>`);
 }
 
-// ── Build node position map (called once after circuitData loads) ──────────────
-function buildNodePos() {
-  if (!circuitData || nodePos) return;
-  nodePos = {};
-  const groupX = {sensory:52, p1:160, motor:268};
-  ['sensory','p1','motor'].forEach(g => {
-    const ns = circuitData.neurons.filter(n => n.group===g);
-    ns.forEach((n,i) => {
-      nodePos[n.id] = {
-        x    : groupX[g],
-        y    : 24 + i * (NGH-48) / (ns.length-1||1),
-        group: g,
-        idx  : i,
-      };
+// ── Graph layout & edge geometry (shared by live graph and explorer) ─────────
+function layoutColumns(neurons, groupX, top, bottom) {
+  const pos = {};
+  for (const g of Object.keys(groupX)) {
+    const ns = neurons.filter(n => n.group === g);
+    ns.forEach((n, i) => {
+      pos[n.id] = { x: groupX[g], y: top + i * (bottom - top) / (ns.length - 1 || 1), group: g };
     });
-  });
+  }
+  return pos;
 }
 
-// ── Bézier curve math & signal pulse renderer ─────────────────────────────────
+// Cubic Bézier for an edge; same-column edges bow out to the right
+function edgeCurve(pos, pre, post, bow) {
+  const a = pos[pre], b = pos[post];
+  if (!a || !b) return null;
+  if (a.group === b.group) {
+    const side = a.group === 'p1' ? bow * 1.3 : bow;
+    return { p0:{x:a.x,y:a.y}, p1:{x:a.x+side,y:a.y}, p2:{x:b.x+side,y:b.y}, p3:{x:b.x,y:b.y} };
+  }
+  const cpx = (a.x + b.x) * 0.5;
+  return { p0:{x:a.x,y:a.y}, p1:{x:cpx,y:a.y}, p2:{x:cpx,y:b.y}, p3:{x:b.x,y:b.y} };
+}
+
+function strokeCurve(ctx, c) {
+  ctx.beginPath();
+  ctx.moveTo(c.p0.x, c.p0.y);
+  ctx.bezierCurveTo(c.p1.x, c.p1.y, c.p2.x, c.p2.y, c.p3.x, c.p3.y);
+  ctx.stroke();
+}
+
 function getBezierPoint(p0, p1, p2, p3, t) {
   const mt = 1 - t;
   const mt2 = mt * mt, mt3 = mt2 * mt;
@@ -803,288 +717,101 @@ function drawPartialCurve(ctx, p0, p1, p2, p3, t) {
 }
 
 function drawSignalDot(ctx, pt, color) {
-  // Outer soft glow aura
   const gr = ctx.createRadialGradient(pt.x, pt.y, 1, pt.x, pt.y, 7.5);
   gr.addColorStop(0, '#ffffff');
   gr.addColorStop(0.35, color);
   gr.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = gr;
   ctx.beginPath(); ctx.arc(pt.x, pt.y, 7.5, 0, Math.PI * 2); ctx.fill();
-
-  // Solid bright core
   ctx.fillStyle = '#ffffff';
   ctx.beginPath(); ctx.arc(pt.x, pt.y, 2.5, 0, Math.PI * 2); ctx.fill();
 }
 
-// ── Sequential circuit cascade controller (Fix 2: staged 1.4s cascade) ─────────
-// Stages with deliberate pauses:
-// - Stage 1 (0.00s - 0.45s): Sensory neurons light up and hold (~450ms)
-// - Stage 2 (0.45s - 0.90s): Active Sensory->P1 lines trace with traveling dots (~450ms) -> P1 lights up
-// - Stage 3 (0.90s - 1.35s): Active P1->Motor lines trace with traveling dots (~450ms) -> Motor lights up
-const CASCADE_DURATION = 1.35;
-const T_SENSORY_HOLD = 0.45;
-const T_P1_HOLD      = 0.90;
-const T_MOTOR_BURST  = 1.35;
+const GROUP_COL    = { sensory:'#e98971', p1:'#ff5c9a', motor:'#7856cf' };
+const LIVE_GROUP_X = { sensory:52, p1:160, motor:268 };
 
-const cascade = {
-  active: false,
-  state: 'calm',
-  startTime: 0,
-  sensoryIds: [],
-  p1Ids: [],
-  motorIds: [],
-  stage1Pairs: [], // [pre, post]
-  stage2Pairs: [], // [pre, post]
-};
-
-function triggerCascade(st) {
-  if (st === 'calm') {
-    cascade.active = false;
-    cascade.state = 'calm';
-    return;
-  }
-  cascade.active = true;
-  cascade.state = st;
-  cascade.startTime = time;
-
-  if (st === 'love') {
-    cascade.sensoryIds = ['S1', 'S2'];
-    cascade.p1Ids      = ['P1a', 'P1b', 'P1e'];
-    cascade.motorIds   = ['M1', 'M2'];
-    cascade.stage1Pairs = [['S1','P1b'], ['S2','P1a']];
-    cascade.stage2Pairs = [['P1a','P1e'], ['P1b','P1e'], ['P1e','M1'], ['P1e','M2']];
-  } else if (st === 'angry') {
-    cascade.sensoryIds = ['S3', 'S4'];
-    cascade.p1Ids      = ['P1c', 'P1d', 'P1e'];
-    cascade.motorIds   = ['M3', 'M4'];
-    cascade.stage1Pairs = [['S3','P1c'], ['S4','P1c']];
-    cascade.stage2Pairs = [['P1c','P1d'], ['P1d','P1e'], ['P1e','M3'], ['P1c','M4']];
-  } else if (st === 'happy') {
-    cascade.sensoryIds = ['S1', 'S2'];
-    cascade.p1Ids      = ['P1a', 'P1e'];
-    cascade.motorIds   = ['M1', 'M3'];
-    cascade.stage1Pairs = [['S2','P1a']];
-    cascade.stage2Pairs = [['P1a','P1e'], ['P1e','M1'], ['P1e','M3']];
-  } else if (st === 'sad') {
-    cascade.sensoryIds = ['S3', 'S4'];
-    cascade.p1Ids      = ['P1c', 'P1e'];
-    cascade.motorIds   = ['M3', 'M4'];
-    cascade.stage1Pairs = [['S3','P1c']];
-    cascade.stage2Pairs = [['P1c','P1e'], ['P1e','M4']];
-  } else if (st === 'chill') {
-    cascade.sensoryIds = ['S4'];
-    cascade.p1Ids      = ['P1d', 'P1c'];
-    cascade.motorIds   = ['M4'];
-    cascade.stage1Pairs = [['S4','P1d'], ['S4','P1c']];
-    cascade.stage2Pairs = [['P1c','M4']];
-  }
+function meanOf(arr, idx) {
+  let s = 0;
+  for (const i of idx) s += arr[i];
+  return idx.length ? s / idx.length : 0;
 }
 
-// ── Node-and-wire neuron graph ─────────────────────────────────────────────────
+// ── Live node-and-wire graph: every glow is a real spike from the model ──────
+let loadError = null;
 function drawNeuronGraph() {
-  // Always update P1 activity summary text so it never lags or contradicts
-  const p1pct = Math.round(player.brain.p1.rate * 100);
-  const statusDesc = getLiveP1Status(player.state, p1pct);
-  const nm = document.querySelector('#neuronMeaning');
-  if (nm) nm.textContent = `P1 circuit is ${p1pct}% active \u2192 ${statusDesc}.`;
-
-  buildNodePos();
-
   ng.clearRect(0,0,NGW,NGH);
   ng.fillStyle='#fff4ee'; ng.fillRect(0,0,NGW,NGH);
 
-  // Fallback when data not loaded yet
-  if (!nodePos || !circuitData) {
+  if (!net) {
     ng.fillStyle='#c09890'; ng.font='11px Fredoka'; ng.textAlign='center';
-    ng.fillText('Loading circuit map\u2026', NGW/2, NGH/2);
+    ng.fillText(loadError ? 'Could not load flywire_p1.json' : 'Loading circuit map…', NGW/2, NGH/2);
     return;
   }
 
-  const curState = cascade.active ? cascade.state : player.state;
-  const stColor  = C[curState] || C.calm;
-  const t_e      = cascade.active ? (time - cascade.startTime) : 999;
+  const ev = replayEvent;
+  const p1pct = Math.round((ev ? meanOf(ev.rates, net.byGroup.p1) : player.brain.p1Rate) * 100);
+  setText('#neuronMeaning', (ev ? 'Replay: ' : 'Live: ') + getLiveP1Status(ev ? ev.state : player.state, p1pct) + '.');
 
-  // Active edge lookups
-  const isStage1 = (pre, post) => cascade.active && cascade.stage1Pairs.some(p => p[0]===pre && p[1]===post);
-  const isStage2 = (pre, post) => cascade.active && cascade.stage2Pairs.some(p => p[0]===pre && p[1]===post);
+  // Live: afterglow of this tick's spikes. Replay: firing-rate snapshot.
+  const glowOf = ev ? (i => Math.min(1, ev.rates[i] * 2)) : (i => nodeGlow[i]);
+  const color  = C[ev ? ev.state : player.state] || C.calm;
 
-  // Helper for Bézier control points
-  function getEdgePts(syn) {
-    const a = nodePos[syn.pre], b = nodePos[syn.post];
-    if (!a || !b) return null;
-    if (a.group === b.group) {
-      const side = a.group==='p1' ? 36 : 28;
-      return { p0: {x:a.x, y:a.y}, p1: {x:a.x+side, y:a.y}, p2: {x:b.x+side, y:b.y}, p3: {x:b.x, y:b.y} };
-    } else {
-      const cpx = (a.x + b.x) * 0.5;
-      return { p0: {x:a.x, y:a.y}, p1: {x:cpx, y:a.y}, p2: {x:cpx, y:b.y}, p3: {x:b.x, y:b.y} };
-    }
+  // Every real edge; thickness = synapse-count weight
+  ng.strokeStyle = 'rgba(200,170,160,0.35)';
+  for (const e of net.edges) {
+    const c = edgeCurve(nodePos, e.pre, e.post, 28);
+    if (!c) continue;
+    ng.lineWidth = 0.4 + e.w * 1.4;
+    strokeCurve(ng, c);
   }
 
-  // ── PASS 1: Dim/fade ALL connection lines that are NOT active ────────────────
-  // (Requirement 2: only active paths stand out)
-  circuitData.synapses.forEach(syn => {
-    if (isStage1(syn.pre, syn.post) || isStage2(syn.pre, syn.post)) return;
-    const pts = getEdgePts(syn);
-    if (!pts) return;
-    ng.strokeStyle = 'rgba(215,188,178,0.14)';
-    ng.lineWidth   = 0.75;
-    ng.shadowBlur  = 0;
-    ng.beginPath();
-    ng.moveTo(pts.p0.x, pts.p0.y);
-    ng.bezierCurveTo(pts.p1.x, pts.p1.y, pts.p2.x, pts.p2.y, pts.p3.x, pts.p3.y);
-    ng.stroke();
-  });
-
-  // ── PASS 2: Animate ACTIVE Stage 1 lines (Sensory -> P1) ─────────────────────
-  // (Requirement 1b: lines draw themselves over ~450ms with traveling signal dot)
-  if (cascade.active) {
-    let u = 0;
-    if (t_e >= T_SENSORY_HOLD && t_e < T_P1_HOLD) {
-      u = (t_e - T_SENSORY_HOLD) / (T_P1_HOLD - T_SENSORY_HOLD);
-    } else if (t_e >= T_P1_HOLD) {
-      u = 1.0;
-    }
-
-    if (u > 0) {
-      circuitData.synapses.forEach(syn => {
-        if (!isStage1(syn.pre, syn.post)) return;
-        const pts = getEdgePts(syn);
-        if (!pts) return;
-        ng.strokeStyle = stColor;
-        ng.lineWidth   = 2.8;
-        ng.shadowColor = stColor;
-        ng.shadowBlur  = 10;
-        drawPartialCurve(ng, pts.p0, pts.p1, pts.p2, pts.p3, u);
-        ng.shadowBlur  = 0;
-
-        // Requirement 3: Moving signal dot traveling along the wire
-        if (u < 1.0) {
-          const dotPt = getBezierPoint(pts.p0, pts.p1, pts.p2, pts.p3, u);
-          drawSignalDot(ng, dotPt, stColor);
-        }
-      });
-    }
-
-    // ── PASS 3: Animate ACTIVE Stage 2 lines (P1 internal & P1 -> Motor) ────────
-    // (Requirement 1c: repeats draw-then-light pattern from P1 to motor over ~450ms)
-    let v = 0;
-    if (t_e >= T_P1_HOLD && t_e < T_MOTOR_BURST) {
-      v = (t_e - T_P1_HOLD) / (T_MOTOR_BURST - T_P1_HOLD);
-    } else if (t_e >= T_MOTOR_BURST) {
-      v = 1.0;
-    }
-
-    if (v > 0) {
-      circuitData.synapses.forEach(syn => {
-        if (!isStage2(syn.pre, syn.post)) return;
-        const pts = getEdgePts(syn);
-        if (!pts) return;
-        ng.strokeStyle = stColor;
-        ng.lineWidth   = 2.8;
-        ng.shadowColor = stColor;
-        ng.shadowBlur  = 10;
-        drawPartialCurve(ng, pts.p0, pts.p1, pts.p2, pts.p3, v);
-        ng.shadowBlur  = 0;
-
-        // Moving signal dot traveling along the P1 -> Motor wire
-        if (v < 1.0) {
-          const dotPt = getBezierPoint(pts.p0, pts.p1, pts.p2, pts.p3, v);
-          drawSignalDot(ng, dotPt, stColor);
-        }
-      });
-    }
+  // Edges whose presynaptic neuron just fired carry signal
+  for (const e of net.edges) {
+    const g = glowOf(e.from);
+    if (g < 0.08) continue;
+    const c = edgeCurve(nodePos, e.pre, e.post, 28);
+    if (!c) continue;
+    ng.strokeStyle = hexToRgba(color, 0.2 + g * 0.7);
+    ng.lineWidth = 0.8 + e.w * 2;
+    strokeCurve(ng, c);
+    if (!ev && g > 0.15 && g < 1) drawSignalDot(ng, getBezierPoint(c.p0, c.p1, c.p2, c.p3, 1 - g), color);
   }
 
-  // ── Column headers ──────────────────────────────────────────────────────────
   ng.fillStyle='#b08880'; ng.font='bold 7.5px DM Mono'; ng.textAlign='center';
-  ng.fillText('SENSORY', 52,  11);
-  ng.fillText('P1 CIRCUIT', 160, 11);
-  ng.fillText('MOTOR',   268, 11);
+  ng.fillText('SENSORY', LIVE_GROUP_X.sensory, 11);
+  ng.fillText('P1 CLUSTER', LIVE_GROUP_X.p1, 11);
+  ng.fillText('MOTOR', LIVE_GROUP_X.motor, 11);
 
-  // ── Draw nodes with staged lighting ─────────────────────────────────────────
   const NODE_R = 8;
-  circuitData.neurons.forEach(n => {
+  net.neurons.forEach((n, i) => {
     const p = nodePos[n.id];
     if (!p) return;
+    const glow = glowOf(i);
+    const base = GROUP_COL[n.group] || GROUP_COL.p1;
 
-    let glow = 0;
-    if (cascade.active) {
-      if (n.group === 'sensory' && cascade.sensoryIds.includes(n.id)) {
-        if (t_e < T_SENSORY_HOLD) {
-          glow = Math.min(1.0, t_e / 0.15); // ramp up and hold 450ms (Requirement 1a)
-        } else if (t_e < T_P1_HOLD) {
-          glow = 1.0;                       // hold while wire draws
-        } else {
-          glow = Math.max(0.25, 1.0 - (t_e - T_P1_HOLD) / 0.6); // gentle fade
-        }
-      } else if (n.group === 'p1' && cascade.p1Ids.includes(n.id)) {
-        if (t_e < T_SENSORY_HOLD + 0.22) {
-          glow = 0; // waiting for wire arrival
-        } else if (t_e < T_P1_HOLD) {
-          glow = (t_e - (T_SENSORY_HOLD + 0.22)) / (T_P1_HOLD - (T_SENSORY_HOLD + 0.22));
-        } else if (t_e < T_MOTOR_BURST) {
-          glow = 1.0; // hold while P1 -> Motor wire draws
-        } else {
-          glow = Math.max(0.3, 1.0 - (t_e - T_MOTOR_BURST) / 0.5);
-        }
-      } else if (n.group === 'motor' && cascade.motorIds.includes(n.id)) {
-        if (t_e < T_P1_HOLD + 0.22) {
-          glow = 0; // waiting for motor wire arrival
-        } else if (t_e < T_MOTOR_BURST) {
-          glow = (t_e - (T_P1_HOLD + 0.22)) / (T_MOTOR_BURST - (T_P1_HOLD + 0.22));
-        } else {
-          glow = Math.max(0.4, 1.0 - (t_e - T_MOTOR_BURST) / 0.4); // hold burst glow
-        }
-      }
-    }
-
-    const base = n.group==='sensory' ? '#e98971'
-               : n.group==='p1'      ? '#ff5c9a'
-               :                       '#7856cf';
-
-    // Outer glow halo for active firing neurons
     if (glow > 0.05) {
       const haloR = NODE_R + 5 + glow * 7;
       const gr = ng.createRadialGradient(p.x, p.y, NODE_R * 0.5, p.x, p.y, haloR);
-      gr.addColorStop(0, hexToRgba(stColor, glow * 0.7));
+      gr.addColorStop(0, hexToRgba(color, glow * 0.7));
       gr.addColorStop(1, 'rgba(0,0,0,0)');
       ng.beginPath(); ng.arc(p.x, p.y, haloR, 0, Math.PI * 2);
       ng.fillStyle = gr; ng.fill();
     }
 
-    // Node body
     ng.beginPath(); ng.arc(p.x, p.y, NODE_R, 0, Math.PI*2);
-    ng.fillStyle = glow > 0.05 ? blendHex(base, stColor, glow * 0.8) : base + '55';
+    ng.fillStyle = glow > 0.05 ? blendHex(base, color, glow * 0.8) : base + '55';
     ng.fill();
     ng.strokeStyle = glow > 0.2 ? '#432c4a88' : '#432c4a22';
     ng.lineWidth = glow > 0.2 ? 1.5 : 1;
     ng.stroke();
 
-    // Node label below
     ng.fillStyle  = glow > 0.2 ? '#432c4a' : '#b0948e';
     ng.font       = (glow > 0.2 ? 'bold ' : '') + '6.5px DM Mono';
     ng.textAlign  = 'center';
     ng.fillText(n.label, p.x, p.y + NODE_R + 8);
   });
-
 }
 
-// Live-sync trace panel border color and text every frame to match live state
-function syncTraceColor() {
-  const el = document.querySelector('#explanation');
-  if (el && !replaying) {
-    el.style.borderColor = C[player.state] || C.calm;
-    const p1pct = Math.round(player.brain.p1.rate * 100);
-    const statusDesc = getLiveP1Status(player.state, p1pct);
-    const p = words(player.state);
-    el.innerHTML = `
-      <p><strong>FLY A \u00B7 ${player.state.toUpperCase()} \u00B7 LIVE</strong></p>
-      <p>01 \u00B7 ${p[0]}</p>
-      <p>02 \u00B7 ${p[1]} \u2192 <strong>${statusDesc}</strong></p>
-      <p>03 \u00B7 Motor choice: <strong>${p[3]}</strong></p>`;
-  }
-}
 
 // ── Spike-rate chart (P1 love / angry only) ────────────────────────────────────
 function drawChart() {
@@ -1105,416 +832,290 @@ function drawChart() {
 }
 
 // ── Hover tip ─────────────────────────────────────────────────────────────────
+function arenaPoint(e) {
+  const r = arena.getBoundingClientRect();
+  return { x:(e.clientX-r.left)*W/r.width, y:(e.clientY-r.top)*H/r.height };
+}
+
+const TIPS = {
+  player: 'This is you — move with WASD, arrow keys, or the on-screen pad.',
+  lover : 'Lover 💘 — get close: song + touch sensory neurons drive P1 → Love. Click to select.',
+  enemy : 'Enemy 😠 — get close: threat sensory neurons drive P1 → Anger. It chases back. Click to select.',
+  friend: 'Friend 😊 — a mild proximity cue, too weak to recruit P1, so Fly A stays chill. Click to select.',
+  food  : 'Snack 🍓 — touch it! The contact sensory neuron drives P1 → Happy.',
+  drama : 'Drama zone ☠ — enter it! Aversive sensory neurons drive P1 → Stressed.',
+};
+const DEFAULT_TIP = 'Hover a character, snack, or drama zone';
+
 function setTip(e) {
-  const r=arena.getBoundingClientRect();
-  const p={x:(e.clientX-r.left)*W/r.width, y:(e.clientY-r.top)*H/r.height};
-  const all=[...flies,...foods,...bads];
-  const hit=all.find(q => dist(p,q)<(q.r||25)+12);
-  let t='Hover a character, snack, or drama zone';
-  if (hit) t = hit.type==='player' ? 'This is you \u2014 move with WASD or arrow keys.'
-             : hit.type==='lover'  ? 'Lover \uD83D\uDC98 \u2014 get close to trigger Love (P1 low/mid). Click to select.'
-             : hit.type==='enemy'  ? 'Enemy \uD83D\uDE20 \u2014 get close to trigger Anger; it chases back. Click to select.'
-             : hit.type==='friend' ? 'Friend \uD83D\uDE0A \u2014 gentle social presence, keeps P1 calm. Click to select.'
-             : hit.type==='food'   ? 'Snack \uD83C\uDF53 \u2014 touch it! Reward signal fires P1 \u2192 calm/positive-leaning.'
-             :                       'Drama zone \u2620 \u2014 enter it! Stress signal fires P1 \u2192 angry-leaning.';
-  document.querySelector('#arenaTip').textContent = t;
-  arena.style.cursor = (hit&&(hit.type==='lover'||hit.type==='enemy'||hit.type==='friend')) ? 'pointer'
-                     : hit ? 'help' : 'crosshair';
+  const p = arenaPoint(e);
+  const hit = [...flies,...foods,...bads].find(q => dist(p,q) < (q.r||25)+12);
+  setText('#arenaTip', hit ? TIPS[hit.type] : DEFAULT_TIP);
+  const isNpc = hit && hit.type in FLY_COL && hit.type !== 'player';
+  arena.style.cursor = isNpc ? 'pointer' : hit ? 'help' : 'crosshair';
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────────
 arena.addEventListener('pointermove', setTip);
 
 ngCvs.addEventListener('pointermove', e => {
-  if (!nodePos || !circuitData) return;
+  if (!net) return;
   const r = ngCvs.getBoundingClientRect();
   const mx = (e.clientX - r.left) * NGW / r.width;
   const my = (e.clientY - r.top) * NGH / r.height;
-  const hit = circuitData.neurons.find(n => {
+  const hit = net.neurons.find(n => {
     const p = nodePos[n.id];
     return p && Math.hypot(mx - p.x, my - p.y) < 14;
   });
-  if (hit) {
-    ngCvs.title = `${hit.cell_type} (FlyWire Root: ${hit.root_id})\n${hit.desc}`;
-  } else {
-    ngCvs.title = 'FlyWire P1 Connectome Graph';
-  }
+  ngCvs.title = hit ? `${hit.label} · ${hit.cell_type} (FlyWire root ${hit.root_id})\n${hit.desc}`
+                    : 'FlyWire connectome subgraph (live)';
 });
 
-arena.addEventListener('pointerdown', e => {
-  const r=arena.getBoundingClientRect();
-  const p={x:(e.clientX-r.left)*W/r.width, y:(e.clientY-r.top)*H/r.height};
+const npcs = () => flies.filter(f => f.type !== 'player');
 
-  const hit = flies.find(f =>
-    (f.type==='lover'||f.type==='enemy'||f.type==='friend') && dist(p,f)<f.r+14
-  );
+function selectFly(f) {
+  selectedFly = f;
+  updateRemoveBtn();
+}
+
+arena.addEventListener('pointerdown', e => {
+  const p = arenaPoint(e);
+  const hit = npcs().find(f => dist(p,f) < f.r+14);
   if (hit) {
-    selectedFly = (selectedFly===hit) ? null : hit;
-    updateRemoveBtn(); e.preventDefault(); return;
+    selectFly(selectedFly === hit ? null : hit);
+    e.preventDefault();
+    return;
   }
-  selectedFly = null; updateRemoveBtn();
+  // With a fly selected, a click on empty space only deselects it
+  if (selectedFly) { selectFly(null); return; }
 
   const radius = mode === 'food' ? 31 : 48;
   const safe = getSafePosition(p.x, p.y, radius);
-  if (mode==='food') foods.push({x:safe.x, y:safe.y, r:31, type:'food'});
-  else               bads.push ({x:safe.x, y:safe.y, r:48, type:'drama'});
+  if (mode === 'food') foods.push({x:safe.x, y:safe.y, r:31, type:'food'});
+  else                 bads.push ({x:safe.x, y:safe.y, r:48, type:'drama'});
 });
 
+const MOVE_KEYS = ['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
 document.addEventListener('keydown', e => {
-  if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
-    keys[e.code]=true; e.preventDefault();
-  }
-  if ((e.key==='Delete'||e.key==='Backspace') && selectedFly) {
+  if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (MOVE_KEYS.includes(e.code)) {
+    keys[e.code] = true; e.preventDefault();
+  } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFly) {
     removeFly(selectedFly); e.preventDefault();
+  } else if (e.code === 'KeyN') {
+    // Keyboard alternative to clicking: cycle through deployed flies
+    const list = npcs();
+    if (list.length) selectFly(list[(list.indexOf(selectedFly) + 1) % list.length]);
+  } else if (e.key === 'Escape' && selectedFly) {
+    selectFly(null);
   }
 });
-document.addEventListener('keyup', e => keys[e.code]=false);
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Releasing a key while the window is unfocused never fires keyup
+const releaseKeys = () => { for (const k in keys) keys[k] = false; };
+window.addEventListener('blur', releaseKeys);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseKeys(); });
+
+// On-screen movement pad (shown on touch devices)
+document.querySelectorAll('[data-key]').forEach(btn => {
+  const k = btn.dataset.key;
+  btn.addEventListener('pointerdown', e => {
+    keys[k] = true; e.preventDefault();
+    if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
+  });
+  for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) btn.addEventListener(t, () => { keys[k] = false; });
+});
 
 // ── Clear board ───────────────────────────────────────────────────────────────
 function clearBoard() {
-  const npcCount = flies.filter(f => f.type!=='player').length;
+  const npcCount = npcs().length;
   const itemCount = foods.length + bads.length;
-  const total = npcCount + itemCount;
-  // Confirm if more than 2 items placed (prevent accidental mid-demo wipe)
-  if (total > 2) {
+  // Confirm if more than 2 things are placed (prevent accidental mid-demo wipe)
+  if (npcCount + itemCount > 2) {
     const ok = confirm(
       `Clear board? This will remove ${npcCount > 0 ? npcCount + ' deployed fl' + (npcCount===1?'y':'ies') + (itemCount>0?' and ':'') : ''}` +
       `${itemCount > 0 ? itemCount + ' item' + (itemCount===1?'':'s') : ''} from the arena.`
     );
     if (!ok) return;
   }
-  // Remove all non-player flies, all food, all drama zones
+  stopReplay();
   flies  = [player];
   foods  = [];
   bads   = [];
-  selectedFly = null;
-  updateRemoveBtn();
+  selectFly(null);
   floaties = [];
-  // Reset player brain and state to calm baseline
-  player.brain  = new Brain();
-  player.state  = 'calm';
-  player.history= ['CALM'];
-  player.last   = time;
-  player.trail  = [];
-  // Reset P1 node glow
-  nodeGlow.sensory.fill(0);
-  nodeGlow.p1.fill(0);
-  nodeGlow.motor.fill(0);
-  p1Flash = 0;
-  // Show calm trace immediately
-  trace({state:'calm', parts:words('calm')}, false);
+  // Reset Fly A's brain, state and history to a calm baseline
+  if (net) {
+    player.brain = new Brain(net);
+    nodeGlow.fill(0);
+  }
+  player.state   = 'calm';
+  player.history = ['CALM'];
+  player.last    = time;
+  player.trail   = [];
+  events.length  = 0;
+  samples.length = 0;
+  nextSampleAt   = time;
+  lastLive       = null;
 }
 
-// Buttons
-document.querySelector('#lover').onclick       = () => spawn('lover');
-document.querySelector('#enemy').onclick       = () => spawn('enemy');
-document.querySelector('#friend').onclick      = () => spawn('friend');
-document.querySelector('#removeFlyBtn').onclick= () => removeFly(selectedFly);
-document.querySelector('#clearBoard').onclick  = clearBoard;
-document.querySelector('#food').onclick        = () => mode='food';
-document.querySelector('#bad').onclick         = () => mode='bad';
+// ── Buttons ───────────────────────────────────────────────────────────────────
+document.querySelector('#lover').onclick        = () => spawn('lover');
+document.querySelector('#enemy').onclick        = () => spawn('enemy');
+document.querySelector('#friend').onclick       = () => spawn('friend');
+document.querySelector('#removeFlyBtn').onclick = () => removeFly(selectedFly);
+document.querySelector('#clearBoard').onclick   = clearBoard;
 
-document.querySelector('#pause').onclick = e => {
-  running=!running; e.target.textContent=running?'\u2161 Pause':'\u25B6 Resume';
+// Placement mode: which item a click on empty arena space drops
+function setMode(m) {
+  mode = m;
+  for (const [id, v] of [['#food','food'], ['#bad','bad']]) {
+    const b = document.querySelector(id);
+    b.classList.toggle('active', mode === v);
+    b.setAttribute('aria-pressed', String(mode === v));
+  }
+}
+document.querySelector('#food').onclick = () => setMode('food');
+document.querySelector('#bad').onclick  = () => setMode('bad');
+setMode(mode);
+
+const pauseBtn = document.querySelector('#pause');
+pauseBtn.onclick = () => {
+  running = !running;
+  pauseBtn.textContent = running ? 'Ⅱ Pause' : '▶ Resume';
 };
 
-document.querySelector('#replay').onclick = () => {
+// Replay steps through recorded state changes; the simulation is frozen
+// meanwhile and resumes afterwards only if it was not paused.
+const replayBtn = document.querySelector('#replay');
+let replayTimer = null;
+function stopReplay() {
+  clearTimeout(replayTimer);
+  replayTimer = null;
+  replaying = false;
+  replayEvent = null;
+  replayBtn.textContent = '▶ Replay drama';
+}
+replayBtn.onclick = () => {
+  if (replaying) return stopReplay();
   if (!events.length) return;
-  replaying=true; running=false; let i=0;
-  const go=()=>{
-    if(i>=events.length){
-      replaying=false; running=true;
-      if(lastLive) trace(lastLive);
-      return;
-    }
-    const ev = events[i++];
-    trace(ev, true);
-    triggerCascade(ev.state);
-    setTimeout(go, 1500);
+  const list = events.slice();
+  let i = 0;
+  replaying = true;
+  replayBtn.textContent = '■ Stop replay';
+  const go = () => {
+    if (i >= list.length) return stopReplay();
+    replayEvent = list[i++];
+    replayTimer = setTimeout(go, 1500);
   };
   go();
 };
 
-// ── Dedicated Per-Emotion Subcircuit Explorer ────────────────────────────────
+// ── Circuit explorer: what the model actually does for each situation ────────
+// For each emotion the model is run offline on a canonical stimulus
+// (FlyModel.SCENARIOS). Nodes are neurons that fired; highlighted wires are
+// real edges whose presynaptic neuron fired before the postsynaptic neuron's
+// first spike, i.e. edges that could have recruited it. The animation replays
+// that recruitment order.
 const subCanvas = document.querySelector('#subcircuitCanvas');
-const subCtx    = subCanvas ? subCanvas.getContext('2d') : null;
+const subCtx    = subCanvas.getContext('2d');
 const SUB_W = 500, SUB_H = 320;
+const SUB_GROUP_X = { sensory:75, p1:250, motor:425 };
+const ANIM_TICK_S = 0.12; // animation seconds per model tick
+let subPos = null;
 
-const subcircuitNodePos = {
-  S1:  { x: 75,  y: 48,  group: 'sensory' },
-  S2:  { x: 75,  y: 116, group: 'sensory' },
-  S3:  { x: 75,  y: 184, group: 'sensory' },
-  S4:  { x: 75,  y: 252, group: 'sensory' },
-  P1a: { x: 250, y: 38,  group: 'p1' },
-  P1b: { x: 250, y: 88,  group: 'p1' },
-  P1c: { x: 250, y: 138, group: 'p1' },
-  P1d: { x: 250, y: 188, group: 'p1' },
-  P1e: { x: 250, y: 238, group: 'p1' },
-  P1f: { x: 250, y: 288, group: 'p1' },
-  M1:  { x: 425, y: 48,  group: 'motor' },
-  M2:  { x: 425, y: 116, group: 'motor' },
-  M3:  { x: 425, y: 184, group: 'motor' },
-  M4:  { x: 425, y: 252, group: 'motor' },
+const EMOTIONS = {
+  love : { name:'Love',           emoji:'💘', color:C.love,  stimulus:'lover',
+           input:'Lover nearby, no threat',
+           behavior:'Orient towards partner, wing-extension song, focused courtship following.' },
+  angry: { name:'Angry',          emoji:'🥊', color:C.angry, stimulus:'enemy',
+           input:'Enemy within range',
+           behavior:'Fast pursuit, turning to confront the rival, lunging.' },
+  chill: { name:'Calm / Friend',  emoji:'😌', color:C.chill, stimulus:'friend',
+           input:'Friend nearby',
+           behavior:'Hold comfortable proximity, slow relaxed cruising. There is no known "friendship neuron" in flies; this is a weak proximity cue.' },
+  happy: { name:'Happy (Snack)',  emoji:'🎉', color:C.happy, stimulus:'food',
+           input:'Touching a snack',
+           behavior:'Linger and reinforce the current spot, calm feeding orientation.' },
+  sad  : { name:'Sad / Stressed', emoji:'😬', color:C.sad,   stimulus:'drama',
+           input:'Inside a drama zone',
+           behavior:'Aversive avoidance, fast turning away from the zone.' },
 };
 
-const idToLabel = {
-  S1: 'aIP1c-1', S2: 'aIP1b-1', S3: 'aIP1b-2', S4: 'aIP1b-3',
-  P1a: 'aSP10a-1', P1b: 'aSP10b-1', P1c: 'aSP10a-2', P1d: 'aSP10a-3', P1e: 'aSP10a-4', P1f: 'aSP10a-5',
-  M1: 'pIP14-1', M2: 'pIP14-2', M3: 'pIP14-3', M4: 'pIP14-4'
-};
-
-const idToDesc = {
-  S1: 'Auditory relay interneuron (courtship pulse song)',
-  S2: 'Mechanosensory relay interneuron (contact/tapping)',
-  S3: 'Sensory integrator interneuron (visual/aversive cues)',
-  S4: 'Antennal lobe relay interneuron (olfactory/proximity cue)',
-  P1a: 'P1 hub cluster integrator (low/mid drive courtship)',
-  P1b: 'P1 hub cluster integrator (recurrent integration)',
-  P1c: 'P1 hub cluster integrator (high-drive aggression & stress)',
-  P1d: 'P1 cluster sustainer (arousal maintenance & calm social)',
-  P1e: 'P1 primary motor relay (routes P1 drive to motor commands)',
-  P1f: 'P1 recurrent modulator (feedback circuit control)',
-  M1: 'Descending courtship song command (wing vibration)',
-  M2: 'Descending wing extension command (unilateral display)',
-  M3: 'Descending steering & aggressive approach command',
-  M4: 'Descending locomotor speed control (cruising & burst)'
-};
-
-const idToRoot = {
-  S1: '720575940625082910', S2: '720575940628426946', S3: '720575940639325941', S4: '720575940637371992',
-  P1a: '720575940613034602', P1b: '720575940625802329', P1c: '720575940636471408', P1d: '720575940627719294',
-  P1e: '720575940637834301', P1f: '720575940619688688',
-  M1: '720575940629514296', M2: '720575940628632057', M3: '720575940604160172', M4: '720575940620402712'
-};
-
-const SUBCIRCUITS = {
-  love: {
-    key: 'love',
-    name: 'Love',
-    emoji: '\uD83D\uDC98',
-    tag: 'Courtship-leaning (low/mid P1 drive)',
-    driveBadge: 'P1 drive ~35\u201348%',
-    color: '#ff5c9a',
-    sensoryNodes: ['S1', 'S2'],
-    p1Nodes: ['P1a', 'P1b', 'P1e', 'P1f'],
-    motorNodes: ['M1', 'M2'],
-    stage1Edges: [['S1','P1b'], ['S2','P1a']],
-    stage2Edges: [['P1a','P1b'], ['P1a','P1e'], ['P1b','P1e'], ['P1a','P1f'], ['P1e','M1'], ['P1e','M2'], ['P1a','M1'], ['P1a','M2']],
-    pathSummary: 'aIP1c-1, aIP1b-1 \u2192 aSP10a-1, aSP10b-1, aSP10a-4 \u2192 pIP14-1, pIP14-2',
-    behavior: 'Orient towards partner, unilateral wing extension song vibration, and focused courtship following.',
-    bioBasis: 'Hoopfer et al. (2015) & Deutsch et al. (2020): Moderate P1 activation engages courtship command channels without crossing the high threshold needed for aggression.',
-    verificationData: [
-      { pre: 'aIP1c-1', post: 'aSP10b-1', preId: '720575940625082910', postId: '720575940625802329', synapses: 3, role: 'Song relay \u2192 P1 hub cluster' },
-      { pre: 'aIP1b-1', post: 'aSP10a-1', preId: '720575940628426946', postId: '720575940613034602', synapses: 2, role: 'Mechanosensory tap \u2192 P1 hub' },
-      { pre: 'aSP10a-1', post: 'aSP10b-1', preId: '720575940613034602', postId: '720575940625802329', synapses: 8, role: 'P1 recurrent hub integration' },
-      { pre: 'aSP10a-1', post: 'aSP10a-4', preId: '720575940613034602', postId: '720575940637834301', synapses: 2, role: 'P1 hub \u2192 Motor command relay' },
-      { pre: 'aSP10a-4', post: 'pIP14-1', preId: '720575940637834301', postId: '720575940629514296', synapses: 4, role: 'P1 relay \u2192 Courtship song command' },
-      { pre: 'aSP10a-4', post: 'pIP14-2', preId: '720575940637834301', postId: '720575940628632057', synapses: 4, role: 'P1 relay \u2192 Wing extension command' },
-      { pre: 'aSP10a-1', post: 'pIP14-1', preId: '720575940613034602', postId: '720575940629514296', synapses: 3, role: 'Direct P1 hub \u2192 Courtship song' }
-    ]
-  },
-  angry: {
-    key: 'angry',
-    name: 'Angry',
-    emoji: '\uD83E\uDD4A',
-    tag: 'Aggression-leaning (high P1 drive + threat)',
-    driveBadge: 'P1 drive >58%',
-    color: '#ed4c4c',
-    sensoryNodes: ['S3', 'S4'],
-    p1Nodes: ['P1c', 'P1d', 'P1e'],
-    motorNodes: ['M3', 'M4'],
-    stage1Edges: [['S3','P1c'], ['S4','P1c'], ['S3','P1d']],
-    stage2Edges: [['P1c','P1d'], ['P1d','P1e'], ['P1e','M3'], ['P1c','M4']],
-    pathSummary: 'aIP1b-2, aIP1b-3 \u2192 aSP10a-2, aSP10a-3, aSP10a-4 \u2192 pIP14-3, pIP14-4',
-    behavior: 'High-speed lunging, aggressive pursuit, turning to confront rival, evasive boxing posture.',
-    bioBasis: 'Hoopfer et al. (2015): High-intensity P1 stimulation coupled with threat signals switches motor output from courtship to aggressive lunging and chasing.',
-    verificationData: [
-      { pre: 'aIP1b-2', post: 'aSP10a-2', preId: '720575940639325941', postId: '720575940636471408', synapses: 2, role: 'Visual threat cue \u2192 P1 hub cluster' },
-      { pre: 'aIP1b-3', post: 'aSP10a-2', preId: '720575940637371992', postId: '720575940636471408', synapses: 1, role: 'Antennal contact cue \u2192 P1 hub' },
-      { pre: 'aSP10a-2', post: 'aSP10a-3', preId: '720575940636471408', postId: '720575940627719294', synapses: 3, role: 'P1 hub \u2192 Arousal sustainer' },
-      { pre: 'aSP10a-3', post: 'aSP10a-4', preId: '720575940627719294', postId: '720575940637834301', synapses: 3, role: 'P1 sustainer \u2192 Motor command relay' },
-      { pre: 'aSP10a-4', post: 'pIP14-3', preId: '720575940637834301', postId: '720575940604160172', synapses: 3, role: 'P1 relay \u2192 Aggressive steering pursuit' },
-      { pre: 'aSP10a-2', post: 'pIP14-4', preId: '720575940636471408', postId: '720575940620402712', synapses: 2, role: 'P1 hub \u2192 Fast locomotor burst speed' }
-    ]
-  },
-  chill: {
-    key: 'chill',
-    name: 'Calm / Friend',
-    emoji: '\uD83D\uDE0C',
-    tag: 'Calm social presence (low/baseline P1 drive)',
-    driveBadge: 'P1 drive ~20\u201325%',
-    color: '#52b8a0',
-    sensoryNodes: ['S4'],
-    p1Nodes: ['P1c', 'P1d'],
-    motorNodes: ['M4'],
-    stage1Edges: [['S4','P1d'], ['S4','P1c']],
-    stage2Edges: [['P1c','M4']],
-    pathSummary: 'aIP1b-3 \u2192 aSP10a-3, aSP10a-2 \u2192 pIP14-4',
-    behavior: 'Holding comfortable proximity, slow relaxed cruising, non-aggressive companion orbit.',
-    bioBasis: 'Honest biological framing: No dedicated "friendship neuron" exists in Drosophila biology. Proximity provides a mild baseline drive to P1 without courtship or attack.',
-    verificationData: [
-      { pre: 'aIP1b-3', post: 'aSP10a-3', preId: '720575940637371992', postId: '720575940627719294', synapses: 1, role: 'Calm olfactory cue \u2192 P1 sustainer' },
-      { pre: 'aIP1b-3', post: 'aSP10a-2', preId: '720575940637371992', postId: '720575940636471408', synapses: 1, role: 'Calm sensory cue \u2192 P1 hub' },
-      { pre: 'aSP10a-2', post: 'pIP14-4', preId: '720575940636471408', postId: '720575940620402712', synapses: 2, role: 'P1 hub \u2192 Locomotor cruising pacing' }
-    ]
-  },
-  happy: {
-    key: 'happy',
-    name: 'Happy (Snack)',
-    emoji: '\uD83C\uDF89',
-    tag: 'Reward-leaning sub-state of P1 (food contact)',
-    driveBadge: 'P1 drive ~40\u201348%',
-    color: '#40b981',
-    sensoryNodes: ['S1', 'S2'],
-    p1Nodes: ['P1a', 'P1e'],
-    motorNodes: ['M1', 'M3'],
-    stage1Edges: [['S2','P1a']],
-    stage2Edges: [['P1a','P1e'], ['P1e','M1'], ['P1e','M3']],
-    pathSummary: 'aIP1b-1 \u2192 aSP10a-1, aSP10a-4 \u2192 pIP14-1, pIP14-3',
-    behavior: 'Linger and reinforce current location, appetitive wing flutter, calm feeding orientation.',
-    bioBasis: 'Appetitive reward contact activates low/mid P1 drive without threat, reinforcing stationary feeding behaviors.',
-    verificationData: [
-      { pre: 'aIP1b-1', post: 'aSP10a-1', preId: '720575940628426946', postId: '720575940613034602', synapses: 2, role: 'Nutrient/touch sensor \u2192 P1 hub cluster' },
-      { pre: 'aSP10a-1', post: 'aSP10a-4', preId: '720575940613034602', postId: '720575940637834301', synapses: 2, role: 'P1 hub \u2192 Motor command relay' },
-      { pre: 'aSP10a-4', post: 'pIP14-1', preId: '720575940637834301', postId: '720575940629514296', synapses: 4, role: 'P1 relay \u2192 Appetitive flutter' },
-      { pre: 'aSP10a-4', post: 'pIP14-3', preId: '720575940637834301', postId: '720575940604160172', synapses: 3, role: 'P1 relay \u2192 Approach maintenance' }
-    ]
-  },
-  sad: {
-    key: 'sad',
-    name: 'Sad / Stressed',
-    emoji: '\u2620',
-    tag: 'Stress/arousal sub-state of P1 (drama zone)',
-    driveBadge: 'P1 drive ~55\u201362%',
-    color: '#e07a2a',
-    sensoryNodes: ['S3', 'S4'],
-    p1Nodes: ['P1c', 'P1e'],
-    motorNodes: ['M3', 'M4'],
-    stage1Edges: [['S3','P1c']],
-    stage2Edges: [['P1c','P1e'], ['P1e','M3'], ['P1c','M4']],
-    pathSummary: 'aIP1b-2 \u2192 aSP10a-2, aSP10a-4 \u2192 pIP14-3, pIP14-4',
-    behavior: 'Aversive avoidance sprint, high-speed turning away from danger perimeter.',
-    bioBasis: 'Aversive stress environment stimulates high P1 drive coupled with escape motor channels (pIP14-4 fast speed, pIP14-3 turning).',
-    verificationData: [
-      { pre: 'aIP1b-2', post: 'aSP10a-2', preId: '720575940639325941', postId: '720575940636471408', synapses: 2, role: 'Aversive stimulus sensor \u2192 P1 hub' },
-      { pre: 'aSP10a-2', post: 'aSP10a-4', preId: '720575940636471408', postId: '720575940637834301', synapses: 1, role: 'P1 hub \u2192 Motor command relay' },
-      { pre: 'aSP10a-4', post: 'pIP14-3', preId: '720575940637834301', postId: '720575940604160172', synapses: 3, role: 'P1 relay \u2192 Evasive steering turn' },
-      { pre: 'aSP10a-2', post: 'pIP14-4', preId: '720575940636471408', postId: '720575940620402712', synapses: 2, role: 'P1 hub \u2192 Escape burst locomotion' }
-    ]
-  }
-};
-
+const explorerData = {};
 let selectedEmotion = 'love';
-let subAnimStartTime = 0;
-let subAnimActive = false;
+let subAnimStart = 0, subAnimActive = false;
 
-function getSubEdgePts(preId, postId) {
-  const a = subcircuitNodePos[preId], b = subcircuitNodePos[postId];
-  if (!a || !b) return null;
-  if (a.group === b.group) {
-    const side = a.group==='p1' ? 44 : 32;
-    return { p0: {x:a.x, y:a.y}, p1: {x:a.x+side, y:a.y}, p2: {x:b.x+side, y:b.y}, p3: {x:b.x, y:b.y} };
-  } else {
-    const cpx = (a.x + b.x) * 0.5;
-    return { p0: {x:a.x, y:a.y}, p1: {x:cpx, y:a.y}, p2: {x:cpx, y:b.y}, p3: {x:b.x, y:b.y} };
+const labelOf = id => net.neurons[net.index.get(id)].label;
+const byFirstSpike = (p, ids) => [...ids].sort((a, b) => p.firstSpike[a] - p.firstSpike[b]);
+
+function buildExplorerData() {
+  for (const key of Object.keys(EMOTIONS)) {
+    const p = probe(net, SCENARIOS[key]);
+    const fs = p.firstSpike;
+    const causal = p.edges.filter(e => fs[e.pre] >= 0 && fs[e.post] > fs[e.pre]);
+    const lastT = Math.max(0, ...[...p.active].map(id => fs[id]));
+    const inGroup = g => byFirstSpike(p, [...p.active].filter(id => net.neurons[net.index.get(id)].group === g));
+    const motors = inGroup('motor');
+    explorerData[key] = {
+      ...p, causal, lastT,
+      entry  : FlyModel.STIMULUS_MAP[EMOTIONS[key].stimulus].filter(id => p.active.has(id)),
+      groups : { sensory: inGroup('sensory'), p1: inGroup('p1'), motor: motors },
+      firstMotorTick: motors.length ? fs[motors[0]] : -1,
+    };
   }
 }
 
 function drawSubcircuit() {
-  if (!subCtx) return;
-  const sc = SUBCIRCUITS[selectedEmotion];
-  if (!sc) return;
-
-  const isolateToggle = document.querySelector('#isolatePathToggle');
-  const isolate = isolateToggle ? isolateToggle.checked : true;
+  if (!net) return;
+  const em = EMOTIONS[selectedEmotion], d = explorerData[selectedEmotion];
+  const isolate = document.querySelector('#isolatePathToggle').checked;
+  const elapsed = subAnimActive ? (performance.now() - subAnimStart) / 1000 : Infinity;
+  const tOf = id => d.firstSpike[id] * ANIM_TICK_S;
 
   subCtx.clearRect(0, 0, SUB_W, SUB_H);
   subCtx.fillStyle = '#fff4ee';
   subCtx.fillRect(0, 0, SUB_W, SUB_H);
 
-  // Column headers
   subCtx.fillStyle = '#b08880';
   subCtx.font = 'bold 8.5px DM Mono';
   subCtx.textAlign = 'center';
-  subCtx.fillText('SENSORY (aIP1)', 75, 14);
-  subCtx.fillText('CENTRAL P1 (aSP10)', 250, 14);
-  subCtx.fillText('MOTOR COMMAND (pIP14)', 425, 14);
+  subCtx.fillText('SENSORY (aIP1)', SUB_GROUP_X.sensory, 14);
+  subCtx.fillText('P1 CLUSTER (aSP10)', SUB_GROUP_X.p1, 14);
+  subCtx.fillText('MOTOR (pIP14)', SUB_GROUP_X.motor, 14);
 
-  const activeNodes = new Set([...sc.sensoryNodes, ...sc.p1Nodes, ...sc.motorNodes]);
-  const activeStage1 = sc.stage1Edges;
-  const activeStage2 = sc.stage2Edges;
-  const isEdgeInSub = (pre, post) =>
-    activeStage1.some(p => p[0]===pre && p[1]===post) ||
-    activeStage2.some(p => p[0]===pre && p[1]===post);
-
-  // Animation timing
-  const now = performance.now();
-  const elapsed = subAnimActive ? (now - subAnimStartTime) / 1000 : 999;
-  const t1 = Math.min(1, Math.max(0, (elapsed - 0.25) / 0.45));
-  const t2 = Math.min(1, Math.max(0, (elapsed - 0.70) / 0.45));
-
-  // PASS 1: Non-active background wires
-  if (circuitData && circuitData.synapses && !isolate) {
-    circuitData.synapses.forEach(syn => {
-      if (isEdgeInSub(syn.pre, syn.post)) return;
-      const pts = getSubEdgePts(syn.pre, syn.post);
-      if (!pts) return;
-      subCtx.strokeStyle = 'rgba(215, 188, 178, 0.12)';
-      subCtx.lineWidth = 0.8;
-      subCtx.beginPath();
-      subCtx.moveTo(pts.p0.x, pts.p0.y);
-      subCtx.bezierCurveTo(pts.p1.x, pts.p1.y, pts.p2.x, pts.p2.y, pts.p3.x, pts.p3.y);
-      subCtx.stroke();
-    });
+  // Background: every other real edge (hidden when isolating)
+  const causalSet = new Set(d.causal);
+  if (!isolate) {
+    subCtx.strokeStyle = 'rgba(200,170,160,0.30)';
+    for (const e of net.edges) {
+      if (causalSet.has(e)) continue;
+      const c = edgeCurve(subPos, e.pre, e.post, 34);
+      if (!c) continue;
+      subCtx.lineWidth = 0.4 + e.w * 1.2;
+      strokeCurve(subCtx, c);
+    }
   }
 
-  // PASS 2: Active Stage 1 lines (Sensory -> P1)
-  activeStage1.forEach(([pre, post]) => {
-    const pts = getSubEdgePts(pre, post);
-    if (!pts) return;
-    const progress = subAnimActive ? t1 : 1.0;
-    subCtx.strokeStyle = sc.color;
-    subCtx.lineWidth = 2.8;
-    subCtx.shadowColor = sc.color;
-    subCtx.shadowBlur = 8;
-    if (progress > 0) {
-      drawPartialCurve(subCtx, pts.p0, pts.p1, pts.p2, pts.p3, progress);
-      if (subAnimActive && progress < 1.0) {
-        const dotPt = getBezierPoint(pts.p0, pts.p1, pts.p2, pts.p3, progress);
-        drawSignalDot(subCtx, dotPt, sc.color);
-      }
-    }
-    subCtx.shadowBlur = 0;
-  });
+  // Recruiting edges draw from the presynaptic spike to the postsynaptic one
+  for (const e of causalSet) {
+    const c = edgeCurve(subPos, e.pre, e.post, 34);
+    if (!c) continue;
+    const t0 = tOf(e.pre), t1 = tOf(e.post);
+    const u = Math.min(1, Math.max(0, (elapsed - t0) / Math.max(t1 - t0, ANIM_TICK_S)));
+    if (u <= 0) continue;
+    subCtx.strokeStyle = em.color;
+    subCtx.lineWidth = 0.8 + e.w * 2.4;
+    drawPartialCurve(subCtx, c.p0, c.p1, c.p2, c.p3, u);
+    if (u < 1) drawSignalDot(subCtx, getBezierPoint(c.p0, c.p1, c.p2, c.p3, u), em.color);
+  }
 
-  // PASS 3: Active Stage 2 lines (P1 internal & P1 -> Motor)
-  activeStage2.forEach(([pre, post]) => {
-    const pts = getSubEdgePts(pre, post);
-    if (!pts) return;
-    const progress = subAnimActive ? t2 : 1.0;
-    subCtx.strokeStyle = sc.color;
-    subCtx.lineWidth = 2.8;
-    subCtx.shadowColor = sc.color;
-    subCtx.shadowBlur = 8;
-    if (progress > 0) {
-      drawPartialCurve(subCtx, pts.p0, pts.p1, pts.p2, pts.p3, progress);
-      if (subAnimActive && progress < 1.0) {
-        const dotPt = getBezierPoint(pts.p0, pts.p1, pts.p2, pts.p3, progress);
-        drawSignalDot(subCtx, dotPt, sc.color);
-      }
-    }
-    subCtx.shadowBlur = 0;
-  });
-
-  // PASS 4: Draw all 14 neurons
   const NODE_R = 9;
-  Object.keys(subcircuitNodePos).forEach(id => {
-    const p = subcircuitNodePos[id];
-    const isActive = activeNodes.has(id);
-    const label = idToLabel[id] || id;
-
+  for (const n of net.neurons) {
+    const p = subPos[n.id];
+    const isActive = d.active.has(n.id);
     if (!isActive && isolate) {
-      // Dimmed ghosted node for isolate mode
       subCtx.beginPath();
       subCtx.arc(p.x, p.y, NODE_R, 0, Math.PI * 2);
       subCtx.fillStyle = 'rgba(230, 215, 208, 0.22)';
@@ -1524,245 +1125,232 @@ function drawSubcircuit() {
       subCtx.setLineDash([2, 3]);
       subCtx.stroke();
       subCtx.setLineDash([]);
-
-      subCtx.fillStyle = 'rgba(160, 135, 130, 0.35)';
+      subCtx.fillStyle = 'rgba(160, 135, 130, 0.5)';
       subCtx.font = '6.5px DM Mono';
       subCtx.textAlign = 'center';
-      subCtx.fillText(label, p.x, p.y + NODE_R + 8);
-      return;
+      subCtx.fillText(n.label, p.x, p.y + NODE_R + 8);
+      continue;
     }
 
-    let glow = 0;
-    if (subAnimActive && isActive) {
-      if (p.group === 'sensory') glow = Math.min(1, Math.max(0, elapsed / 0.3));
-      else if (p.group === 'p1') glow = Math.min(1, Math.max(0, (elapsed - 0.45) / 0.3));
-      else if (p.group === 'motor') glow = Math.min(1, Math.max(0, (elapsed - 0.90) / 0.3));
-    } else if (isActive) {
-      glow = 0.85;
-    }
-
-    const baseCol = p.group === 'sensory' ? '#e98971'
-                  : p.group === 'p1'      ? '#ff5c9a'
-                  :                         '#7856cf';
-
-    // Glowing outer halo for active neurons
+    const glow = isActive ? Math.min(1, Math.max(0, (elapsed - tOf(n.id)) / 0.25)) * 0.85 : 0;
+    const baseCol = GROUP_COL[n.group] || GROUP_COL.p1;
     if (glow > 0.05) {
       const haloR = NODE_R + 6 + glow * 5;
       const gr = subCtx.createRadialGradient(p.x, p.y, NODE_R * 0.4, p.x, p.y, haloR);
-      gr.addColorStop(0, hexToRgba(sc.color, glow * 0.65));
+      gr.addColorStop(0, hexToRgba(em.color, glow * 0.65));
       gr.addColorStop(1, 'rgba(0,0,0,0)');
       subCtx.beginPath();
       subCtx.arc(p.x, p.y, haloR, 0, Math.PI * 2);
       subCtx.fillStyle = gr;
       subCtx.fill();
     }
-
-    // Node body
     subCtx.beginPath();
     subCtx.arc(p.x, p.y, NODE_R, 0, Math.PI * 2);
-    subCtx.fillStyle = isActive ? blendHex(baseCol, sc.color, glow * 0.75) : baseCol + '44';
+    subCtx.fillStyle = glow > 0.05 ? blendHex(baseCol, em.color, glow * 0.75) : baseCol + '44';
     subCtx.fill();
     subCtx.strokeStyle = isActive ? '#432c4a' : '#432c4a33';
     subCtx.lineWidth = isActive ? 1.8 : 1;
     subCtx.stroke();
-
-    // Node label below
     subCtx.fillStyle = isActive ? '#432c4a' : '#b0948e';
     subCtx.font = (isActive ? 'bold ' : '') + '7px DM Mono';
     subCtx.textAlign = 'center';
-    subCtx.fillText(label, p.x, p.y + NODE_R + 9);
-  });
-
-  if (subAnimActive && elapsed < 1.45) {
-    requestAnimationFrame(drawSubcircuit);
-  } else {
-    subAnimActive = false;
+    subCtx.fillText(n.label, p.x, p.y + NODE_R + 9);
   }
+
+  if (subAnimActive && elapsed < (d.lastT + 3) * ANIM_TICK_S) requestAnimationFrame(drawSubcircuit);
+  else subAnimActive = false;
+}
+
+function pathSummary(d) {
+  const part = ids => ids.length ? ids.map(labelOf).join(', ') : '—';
+  return `${part(d.entry)} → ${part(d.groups.p1.slice(0, 3))}${d.groups.p1.length > 3 ? '…' : ''} → ${part(d.groups.motor.slice(0, 2))}${d.groups.motor.length > 2 ? '…' : ''}`;
 }
 
 function updateSubcircuitDetail(key) {
-  const sc = SUBCIRCUITS[key];
-  if (!sc) return;
+  const em = EMOTIONS[key], d = explorerData[key];
+  const { sensory, p1, motor } = d.groups;
 
-  const totalActive = sc.sensoryNodes.length + sc.p1Nodes.length + sc.motorNodes.length;
   const countEl = document.querySelector('#activeNeuronCount');
-  if (countEl) {
-    countEl.textContent = `${totalActive} / 14 active (${sc.sensoryNodes.length} sensory \u00B7 ${sc.p1Nodes.length} P1 cluster \u00B7 ${sc.motorNodes.length} motor)`;
-    countEl.style.color = sc.color;
-  }
+  countEl.textContent = `${d.active.size} / ${net.neurons.length} fire (${sensory.length} sensory · ${p1.length} P1 · ${motor.length} motor)` +
+    (d.firstMotorTick >= 0 ? `; first motor spike after ${d.firstMotorTick + 1} ticks (~${Math.round((d.firstMotorTick + 1) * 1000 / 30)} ms)` : '; no motor output');
+  countEl.style.color = em.color;
 
-  const chipsEl = document.querySelector('#modeledCellTypes');
-  if (chipsEl) {
-    chipsEl.innerHTML = `
-      <span class="chip"><strong>aIP1</strong> (${sc.sensoryNodes.map(id => idToLabel[id]).join(', ')})</span>
-      <span class="chip"><strong>aSP10</strong> (${sc.p1Nodes.map(id => idToLabel[id]).join(', ')})</span>
-      <span class="chip"><strong>pIP14</strong> (${sc.motorNodes.map(id => idToLabel[id]).join(', ')})</span>`;
-  }
+  const chip = (type, ids) => `<span class="chip"><strong>${type}</strong> (${ids.length ? ids.map(labelOf).join(', ') : 'none'})</span>`;
+  setHTML('#modeledCellTypes', chip('aIP1', sensory) + chip('aSP10', p1) + chip('pIP14', motor));
 
-  const descEl = document.querySelector('#stateBehaviorDesc');
-  if (descEl) {
-    descEl.innerHTML = `<strong>Drive weighting:</strong> ${sc.driveBadge}.<br>${sc.behavior}<br><small style="color:#8a6460;display:block;margin-top:4px;"><em>Biological grounding:</em> ${sc.bioBasis}</small>`;
-  }
+  setHTML('#stateBehaviorDesc',
+    `<strong>Input:</strong> ${em.input} → drives ${d.entry.map(labelOf).join(', ') || 'no sensory neuron'}.<br>` +
+    `<strong>Model P1 rate:</strong> ${Math.round(d.meanP1 * 100)}%.<br>${em.behavior}`);
 
-  const dataListEl = document.querySelector('#supportingDataList');
-  if (dataListEl) {
-    dataListEl.innerHTML = sc.verificationData.map(v => `
+  setHTML('#supportingDataList', d.causal.length
+    ? [...d.causal].sort((a, b) => b.synapse_count - a.synapse_count).map(e => `
       <div class="data-row">
         <div class="data-row-left">
-          <b>${v.pre} \u2192 ${v.post}</b>
-          <small>${v.role} &middot; Root: ${v.preId.slice(0,6)}...${v.preId.slice(-4)}</small>
+          <b>${labelOf(e.pre)} → ${labelOf(e.post)}</b>
+          <small>root ${e.pre_root_id} → ${e.post_root_id}</small>
         </div>
-        <span class="data-row-synapses">${v.synapses} ${v.synapses===1?'synapse':'synapses'}</span>
-      </div>`).join('');
-  }
+        <span class="data-row-synapses">${e.synapse_count} ${e.synapse_count === 1 ? 'synapse' : 'synapses'}</span>
+      </div>`).join('')
+    : '<p class="data-disclaimer">No edge carried signal: this input is too weak to recruit anything past the sensory layer.</p>');
 }
 
 function selectSubcircuitEmotion(key) {
   selectedEmotion = key;
-  const sc = SUBCIRCUITS[key];
-  if (!sc) return;
-
+  const em = EMOTIONS[key];
   document.querySelectorAll('.emotion-btn').forEach(b => {
-    const isAct = b.dataset.emotion === key;
-    b.classList.toggle('active', isAct);
-    if (isAct) {
-      b.style.borderColor = sc.color;
-      b.style.boxShadow = `0 3px 12px ${sc.color}44`;
-    } else {
-      b.style.borderColor = '';
-      b.style.boxShadow = '';
-    }
+    const on = b.dataset.emotion === key;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+    b.tabIndex = on ? 0 : -1;
+    b.style.borderColor = on ? em.color : '';
+    b.style.boxShadow   = on ? `0 3px 12px ${em.color}44` : '';
   });
-
-  const titleEl = document.querySelector('#subcircuitTitle');
-  if (titleEl) {
-    titleEl.innerHTML = `<b style="color:${sc.color}">${sc.emoji} ${sc.name}</b> &middot; ${sc.tag}`;
-  }
-  const subEl = document.querySelector('#subcircuitPathSummary');
-  if (subEl) subEl.textContent = sc.pathSummary;
-
+  setHTML('#subcircuitTitle', `<b style="color:${em.color}">${em.emoji} ${em.name}</b> · ${em.input}`);
+  setText('#subcircuitPathSummary', pathSummary(explorerData[key]));
   updateSubcircuitDetail(key);
   animateSubcircuit();
 }
 
 function animateSubcircuit() {
-  subAnimStartTime = performance.now();
-  subAnimActive = true;
-  requestAnimationFrame(drawSubcircuit);
+  subAnimStart = performance.now();
+  if (!subAnimActive) { subAnimActive = true; requestAnimationFrame(drawSubcircuit); }
 }
 
 function initSubcircuitExplorer() {
+  buildExplorerData();
   const container = document.querySelector('#emotionButtons');
-  if (!container) return;
-
-  container.innerHTML = Object.values(SUBCIRCUITS).map(sc => `
-    <button class="emotion-btn ${sc.key===selectedEmotion?'active':''}" data-emotion="${sc.key}" role="tab" aria-selected="${sc.key===selectedEmotion}">
+  container.innerHTML = Object.entries(EMOTIONS).map(([key, em]) => `
+    <button class="emotion-btn" id="tab-${key}" data-emotion="${key}" role="tab" aria-selected="false" aria-controls="subcircuitCanvas" tabindex="-1">
       <div class="emotion-btn-top">
-        <span class="emotion-btn-title">${sc.emoji} ${sc.name}</span>
-        <span class="emotion-btn-badge">${sc.driveBadge}</span>
+        <span class="emotion-btn-title">${em.emoji} ${em.name}</span>
+        <span class="emotion-btn-badge">P1 ≈ ${Math.round(explorerData[key].meanP1 * 100)}%</span>
       </div>
-      <span class="emotion-btn-tag">${sc.tag}</span>
+      <span class="emotion-btn-tag">${em.input}</span>
     </button>`).join('');
 
-  container.querySelectorAll('.emotion-btn').forEach(btn => {
+  const tabs = [...container.querySelectorAll('.emotion-btn')];
+  tabs.forEach((btn, i) => {
     btn.onclick = () => selectSubcircuitEmotion(btn.dataset.emotion);
+    // Arrow keys move between tabs (WAI-ARIA tabs pattern)
+    btn.onkeydown = e => {
+      const dir = { ArrowDown:1, ArrowRight:1, ArrowUp:-1, ArrowLeft:-1 }[e.key];
+      if (!dir) return;
+      e.preventDefault(); e.stopPropagation();
+      const next = tabs[(i + dir + tabs.length) % tabs.length];
+      next.focus();
+      selectSubcircuitEmotion(next.dataset.emotion);
+    };
   });
 
-  const isolateToggle = document.querySelector('#isolatePathToggle');
-  if (isolateToggle) isolateToggle.onchange = drawSubcircuit;
+  document.querySelector('#isolatePathToggle').onchange = () => { if (!subAnimActive) drawSubcircuit(); };
+  document.querySelector('#animSubcircuitBtn').onclick = animateSubcircuit;
 
-  const animBtn = document.querySelector('#animSubcircuitBtn');
-  if (animBtn) animBtn.onclick = animateSubcircuit;
+  const tip = document.querySelector('#subcircuitTip');
+  subCanvas.addEventListener('pointermove', e => {
+    const r = subCanvas.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * SUB_W / r.width;
+    const my = (e.clientY - r.top) * SUB_H / r.height;
+    const n = net.neurons.find(n => Math.hypot(mx - subPos[n.id].x, my - subPos[n.id].y) < 14);
+    if (!n) { tip.style.display = 'none'; return; }
+    const em = EMOTIONS[selectedEmotion], d = explorerData[selectedEmotion];
+    const active = d.active.has(n.id);
+    tip.style.display = 'block';
+    tip.style.left = `${(e.clientX - r.left) + 12}px`;
+    tip.style.top  = `${(e.clientY - r.top) + 12}px`;
+    tip.innerHTML = `<strong>${n.label}</strong> (${n.group.toUpperCase()})<br>` +
+                    `FlyWire root: <code>${n.root_id}</code><br>${n.desc}<br>` +
+                    `<span style="color:${active ? em.color : '#aaa'}">${active
+                      ? `✔ Fires ${Math.round(d.rates[n.id] * 100)}% of ticks, first at tick ${d.firstSpike[n.id] + 1}`
+                      : '— Silent for this input'}</span>`;
+  });
+  subCanvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
 
-  // Tooltip handler on subcircuit canvas
-  if (subCanvas) {
-    const tip = document.querySelector('#subcircuitTip');
-    subCanvas.addEventListener('pointermove', e => {
-      const r = subCanvas.getBoundingClientRect();
-      const mx = (e.clientX - r.left) * SUB_W / r.width;
-      const my = (e.clientY - r.top) * SUB_H / r.height;
-      const hitKey = Object.keys(subcircuitNodePos).find(id => {
-        const p = subcircuitNodePos[id];
-        return Math.hypot(mx - p.x, my - p.y) < 14;
-      });
-      if (hitKey && tip) {
-        const sc = SUBCIRCUITS[selectedEmotion];
-        const isActive = sc && (sc.sensoryNodes.includes(hitKey) || sc.p1Nodes.includes(hitKey) || sc.motorNodes.includes(hitKey));
-        tip.style.display = 'block';
-        tip.style.left = `${(e.clientX - r.left) + 12}px`;
-        tip.style.top  = `${(e.clientY - r.top) + 12}px`;
-        tip.innerHTML = `<strong>${idToLabel[hitKey]}</strong> (${subcircuitNodePos[hitKey].group.toUpperCase()})<br>` +
-                        `FlyWire Root: <code>${idToRoot[hitKey]}</code><br>` +
-                        `${idToDesc[hitKey]}<br>` +
-                        `<span style="color:${isActive?sc.color:'#aaa'}">${isActive ? '\u2714 Active in '+sc.name+' path' : '\u2014 Inactive in '+sc.name+' path'}</span>`;
-      } else if (tip) {
-        tip.style.display = 'none';
-      }
-    });
-    subCanvas.addEventListener('pointerleave', () => {
-      const tip = document.querySelector('#subcircuitTip');
-      if (tip) tip.style.display = 'none';
-    });
-  }
-
-  selectSubcircuitEmotion('love');
+  selectSubcircuitEmotion(selectedEmotion);
 }
 
-// ── Unified View Navigation ──────────────────────────────────────────────────
+// ── View navigation ───────────────────────────────────────────────────────────
 function setView(v) {
-  document.querySelectorAll('[data-view]').forEach(q => q.classList.toggle('active', q.dataset.view === v));
+  document.querySelectorAll('[data-view]').forEach(q => {
+    q.classList.toggle('active', q.dataset.view === v);
+    q.setAttribute('aria-pressed', String(q.dataset.view === v));
+  });
   const app = document.querySelector('#app');
   app.classList.remove('simple', 'circuit');
-  if (v === 'simple') {
-    app.classList.add('simple');
-  } else if (v === 'circuit') {
-    app.classList.add('circuit');
-    drawSubcircuit();
-  }
+  if (v === 'simple') app.classList.add('simple');
+  else if (v === 'circuit') { app.classList.add('circuit'); if (net) animateSubcircuit(); }
 }
 
-document.querySelectorAll('[data-view]').forEach(b => {
-  b.onclick = () => setView(b.dataset.view);
-});
-
-const openCircuitBtn = document.querySelector('#openCircuitViewBtn');
-if (openCircuitBtn) {
-  openCircuitBtn.onclick = () => setView('circuit');
-}
-
-initSubcircuitExplorer();
+document.querySelectorAll('[data-view]').forEach(b => { b.onclick = () => setView(b.dataset.view); });
+document.querySelector('#openCircuitViewBtn').onclick = () => setView('circuit');
 
 // ── Onboarding ────────────────────────────────────────────────────────────────
 const steps = [
-  ['\u2328\uFE0F', 'WASD to move your fly',
-   "You're Fly A. Steer in real time with WASD or the arrow keys."],
-  ['\uD83D\uDC98', 'Deploy Lover, Enemy, or Friend',
-   'Lover \u2192 Love (P1 low/mid). Enemy \u2192 Angry (P1 high, chases you). Friend \u2192 Chill (P1 stays calm \u2014 no friendship neuron in real fly research; this models neutral social presence). Click a fly to select it, then Delete to remove.'],
-  ['\uD83E\uDDE0', 'Flip to BRAIN view',
-   'See 14 individual LIF neurons light up in real time as spikes propagate: sensory \u2192 P1 \u2192 motor. Each dot glows when that neuron fired this tick.'],
+  ['⌨️', 'WASD to move your fly',
+   "You're Fly A. Steer with WASD, the arrow keys, or the on-screen pad on touch screens."],
+  ['💘', 'Deploy Lover, Enemy, or Friend',
+   'Get close to trigger Love, Anger, or Chill. Click a fly (or press N) to select it, then Delete to remove it. Clicking empty space drops the selected item: a snack or a drama zone.'],
+  ['🧠', 'Flip to BRAIN view',
+   '14 real FlyWire neurons fire in real time. Only the 4 sensory neurons get input from the arena; P1 and motor neurons are driven purely through the real synapses between them.'],
 ];
-let step=0;
-function intro(){
-  const q=steps[step];
-  document.querySelector('#stepEmoji').textContent = q[0];
-  document.querySelector('#stepCount').textContent = `${step+1} / 3`;
-  document.querySelector('#stepTitle').textContent = q[1];
-  document.querySelector('#stepText').textContent  = q[2];
-  document.querySelector('#nextStep').textContent  = step===2 ? "Let's fly!" : 'Next \u2192';
+let stepIdx = 0;
+function intro() {
+  const q = steps[stepIdx];
+  setText('#stepEmoji', q[0]);
+  setText('#stepCount', `${stepIdx+1} / ${steps.length}`);
+  setText('#stepTitle', q[1]);
+  setText('#stepText',  q[2]);
+  setText('#nextStep',  stepIdx === steps.length-1 ? "Let's fly!" : 'Next →');
 }
-document.querySelector('#nextStep').onclick=()=>{if(++step===3)document.querySelector('#onboarding').remove();else intro();};
-document.querySelector('#skip').onclick=()=>document.querySelector('#onboarding').remove();
+const closeIntro = () => document.querySelector('#onboarding').remove();
+document.querySelector('#nextStep').onclick = () => { if (++stepIdx === steps.length) closeIntro(); else intro(); };
+document.querySelector('#skip').onclick = closeIntro;
 intro();
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
-trace({state:'calm', parts:words('calm')}, false);
-setInterval(tick, 1000/30);
-render();
-
-// ── Global export for inspection and testing ─────────────────────────────────
-if (typeof window !== 'undefined') {
-  window.FlyMind = { player, flies, foods, bads, keys, spawn, change, sense, tick, render, words, dominant, Brain };
+// Fill any [data-fact] element with numbers computed from the loaded data
+function fillDataFacts() {
+  const inh = net.inhibitoryCount;
+  const facts = {
+    neurons : String(net.neurons.length),
+    edges   : String(net.edges.length),
+    synapses: String(net.totalSynapses),
+    sign    : inh
+      ? `${inh} edges predicted GABAergic are modelled as inhibitory; the rest as excitatory.`
+      : 'This data snapshot has no neurotransmitter predictions, so every edge is modelled as excitatory.',
+  };
+  document.querySelectorAll('[data-fact]').forEach(el => { el.textContent = facts[el.dataset.fact] ?? el.textContent; });
 }
 
-})();
+function start(data) {
+  net      = new Connectome(data);
+  nodeGlow = new Float32Array(net.neurons.length);
+  nodePos  = layoutColumns(net.neurons, LIVE_GROUP_X, 24, NGH - 24);
+  subPos   = layoutColumns(net.neurons, SUB_GROUP_X, 38, SUB_H - 32);
+  player.brain = new Brain(net);
+  fillDataFacts();
+  initSubcircuitExplorer();
+}
 
+fetch('flywire_p1.json')
+  .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+  .then(start)
+  .catch(err => {
+    loadError = err;
+    console.error('FlyMind: could not load flywire_p1.json', err);
+    setText('#calloutTitle', 'Could not load the connectome data');
+    setText('#calloutSub', location.protocol === 'file:'
+      ? 'Browsers block data loading on file:// pages. Run "node serve.js" and open http://127.0.0.1:8080.'
+      : `flywire_p1.json failed to load (${err.message}).`);
+  });
+
+requestAnimationFrame(frame);
+
+// ── Global export for inspection and testing ─────────────────────────────────
+window.FlyMind = {
+  get player() { return player; }, get flies() { return flies; },
+  get foods()  { return foods;  }, get bads()  { return bads;  },
+  get net()    { return net;    },
+  keys, spawn, change, sense, step, render, words, dominant, Brain,
+};
+
+})();
